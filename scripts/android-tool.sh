@@ -11,7 +11,8 @@
 #
 #   env                         Ensure Platform-Tools in tools/, check unzip/payload-dumper-go
 #   discover                    Identify the connected device, write profiles/device-profile.*
-#   unlock                      Check unlock ability, then unlock the bootloader (wipes data)
+#   unlock                      Pre-flight (Developer options, USB debugging, OEM-unlocking checklist),
+#                               get_unlock_ability must be 1, then unlock the bootloader (wipes data)
 #   extract-boot <ota.zip>      Stock images -> firmware/images/Original-<build>-from-OTA/Original-*.img
 #                               (set EXPECTED_OTA_MD5 to refuse a zip whose MD5 differs)
 #   root                        Patch the correct image with Magisk on-device, then boot/flash it
@@ -333,7 +334,7 @@ vendor_unlock_hint() {
     mfr=$(lower "$(profile_get RO_PRODUCT_MANUFACTURER)$(profile_get RO_PRODUCT_BRAND)$(profile_get PRODUCT)")
     case "$mfr" in
         *oppo*|*oneplus*|*realme*)
-            warn "OPPO / OnePlus / realme: Chinese-market ColorOS builds require approval through the manufacturer's Deep Testing app before fastboot will unlock. 'get_unlock_ability' reports 0 until that approval is granted. Global OnePlus builds usually allow 'fastboot oem unlock' after enabling OEM unlocking in Developer options." ;;
+            warn "OPPO / OnePlus / realme: 'fastboot flashing unlock' works once 'OEM unlocking' is ON in Developer options (verified on OnePlus 13 PJZ110 C.88, no Deep Testing app needed). Some Chinese-market ColorOS builds additionally require approval through the Deep Testing app; 'get_unlock_ability' reports 0 until then. OnePlus fastboot is often invisible over USB 3: use a USB 2.0 cable/hub." ;;
         *xiaomi*|*redmi*|*poco*)
             warn "Xiaomi: unlocking requires the Mi Unlock tool (Windows) and a waiting period bound to your Mi account. fastboot alone will not unlock." ;;
         *samsung*)
@@ -344,16 +345,59 @@ vendor_unlock_hint() {
     esac
 }
 
+unlock_preflight() {
+    # Pre-unlock readiness check. Runs over adb when the phone is still in
+    # Android; skipped (with a note) when it is already in fastboot, where
+    # get_unlock_ability is the authoritative answer anyway.
+    say "Unlock pre-flight"
+    case "$(device_state)" in
+        fastboot) note "Device already in fastboot; skipping the adb-side checks (get_unlock_ability decides)."; return ;;
+        device) ;;
+        unauthorized) die "Device is attached but unauthorized. Accept the USB debugging prompt on the phone." ;;
+        none) die "No device found over adb. Enable USB debugging and check the cable, or boot the phone into fastboot by hand." ;;
+        multiple) die "More than one device attached. Connect only the target device." ;;
+        *) die "Device is in '$(device_state)' mode; cannot run the pre-flight." ;;
+    esac
+
+    local dev usb oem
+    dev=$(adb shell settings get global development_settings_enabled 2>/dev/null | tr -d '\r')
+    usb=$(adb shell settings get global adb_enabled 2>/dev/null | tr -d '\r')
+    oem=$(adb shell getprop sys.oem_unlock_allowed 2>/dev/null | tr -d '\r')
+    note "Developer options enabled : ${dev:-unknown}"
+    note "USB debugging enabled     : ${usb:-unknown}"
+    note "sys.oem_unlock_allowed    : ${oem:-not exposed on this device}"
+    [ "$dev" = 1 ] || die "Developer options are not enabled. Settings > About > tap Build number 7x, then Developer options > OEM unlocking ON."
+    [ "$usb" = 1 ] || die "USB debugging is off; the tool needs adb to reboot into fastboot and to verify the result."
+    case "$oem" in
+        0) die "sys.oem_unlock_allowed=0: 'OEM unlocking' is OFF in Developer options. Turn it on and rerun." ;;
+        1) note "OEM unlocking is ON (confirmed by sys.oem_unlock_allowed)." ;;
+        *) note "This device does not report the OEM-unlocking toggle to adb (OnePlus/OPPO keep it in the persistent data block)."
+           note "Open Settings > System > Developer options and confirm 'OEM unlocking' is ON now." ;;
+    esac
+    note "Checklist before the reboot:"
+    note "  - 'OEM unlocking' toggle is ON in Developer options."
+    note "  - Phone is on a USB 2.0 cable/hub (OnePlus fastboot is invisible over USB 3 on many Macs)."
+    note "  - Everything you need from the phone is backed up: the unlock wipes userdata."
+    confirm_state_change "I have confirmed the three items above."
+}
+
 cmd_unlock() {
     need_cmd fastboot "Run: $0 env"
     profile_require
     say "Bootloader unlock"
     vendor_unlock_hint
     note "Unlocking performs a factory reset. Back up the phone first."
-    note "Make sure 'OEM unlocking' is enabled in Developer options before rebooting."
+    unlock_preflight
     require_fastboot
 
     local s unlocked ability
+    if [ "$DRY_RUN" = 1 ] && [ "$(device_state)" != fastboot ]; then
+        note "(dry-run) device is not in fastboot, so getvar reads are skipped. Would run:"
+        note "  $ fastboot getvar unlocked            (stop if yes)"
+        note "  $ fastboot flashing get_unlock_ability (must be 1)"
+        note "  $ fastboot flashing unlock             (serial-gated; falls back to 'fastboot oem unlock')"
+        return
+    fi
     s=$(serial)
     unlocked=$(fb_var unlocked)
     say "fastboot reports unlocked=$unlocked"
@@ -362,7 +406,9 @@ cmd_unlock() {
     ability=$(fastboot flashing get_unlock_ability 2>&1 | tr -d '\r' | grep -i -m1 'unlock_ability\|(bootloader)' || true)
     note "get_unlock_ability: ${ability:-no response}"
     case "$ability" in
-        *0*) warn "Unlock ability is 0: OEM unlocking is disabled or the vendor has not approved this device. Fix that first; forcing the command will fail." ;;
+        *1*) note "Unlock ability is 1: the bootloader will accept the unlock command." ;;
+        *0*) die "Unlock ability is 0: 'OEM unlocking' is OFF or the vendor has not approved this device. Reboot to Android ($0 reboot system), turn the toggle on, and rerun. Forcing the command would fail." ;;
+        *)   warn "Could not read get_unlock_ability (${ability:-no response}). The bootloader may not implement it; the unlock command below may still work." ;;
     esac
 
     confirm_high_risk "fastboot flashing unlock (erases all user data)" "$s"

@@ -59,6 +59,7 @@ How it enforces the command rules in this file:
 - **Read-only** (`env`, `discover`, getvar/metadata reads) run without prompts.
 - **State-changing** (any reboot, `fastboot boot`) ask for `y/N` with an explanation.
 - **High-risk** (`flashing unlock`, `oem unlock`, `fastboot flash`, `adb sideload`) print a banner and require typing the device serial. There is no flag to skip this; do not add one.
+- `unlock` runs a pre-flight before rebooting: over adb it requires Developer options and USB debugging to read back as 1, reads `sys.oem_unlock_allowed` (this OnePlus does not expose it, so the user must confirm the OEM-unlocking toggle, the USB 2.0 cable and a backup at a y/N checklist), then in fastboot it refuses to continue when `get_unlock_ability` is 0. Rerun the pre-flight whenever the phone has been relocked or reset; do not skip it.
 - `extract-boot` and `rom` compare the zip's `pre-device` with the profiled codename and refuse on mismatch unless `ALLOW_DEVICE_MISMATCH=1`. `root` warns when the installed build differs from the extracted stock build.
 - `root` patches `init_boot.img` when the device has that partition, otherwise `boot.img`. Only `boot` images can be temp-booted with `fastboot boot`; `init_boot` must be flashed, so the stock copy in `firmware/stock/` is the rollback and `restore init_boot` flashes it back.
 - Stock OTAs from OPPO/OnePlus ship `payload.bin`; `extract-boot` needs `payload-dumper-go` on `PATH` for those.

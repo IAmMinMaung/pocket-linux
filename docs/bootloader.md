@@ -39,3 +39,14 @@ were byte-identical for every boot-chain partition except init_boot_a (now Magis
 Revert sequence (all serial-gated, `scripts/omarchy-install-slot-b.sh`): `revert-stock` flashed `Original-boot.img` -> boot_b and `Original-init_boot.img` -> init_boot_a from `firmware/images/Original-PJZ110_16.0.5.703CN01-device-stock/` (sha256 26710a8e… / 80e373ee…; init_boot matches the hash descriptor in vbmeta, boot's footer is signed with the key vbmeta chains to), `set_active a`, reboot; stock recovery "Format data"; Android booted stock (fingerprint release-keys, no Magisk). Then `lock`: `fastboot flashing lock` OKAY, confirmed on the phone, data wiped again. Result over adb: `ro.boot.flash.locked=1`, `ro.boot.verifiedbootstate=green`, `ro.boot.vbmeta.device_state=locked`, slot `_a`, build PJZ110_16.0.5.703(CN01). Before the writes every boot-chain partition on both slots was hashed from Ubuntu: only init_boot_a and boot_b differed from stock.
 
 To unlock again: Developer options > OEM unlocking ON, then `scripts/android-tool.sh unlock`.
+
+## Pre-unlock check (added 2026-11-19)
+
+`scripts/android-tool.sh unlock` now runs a pre-flight before it reboots the phone:
+
+1. Over adb: `settings get global development_settings_enabled` and `adb_enabled` must both be 1.
+2. `getprop sys.oem_unlock_allowed`: 1 passes, 0 aborts. On this PJZ110 the property is empty (OnePlus keeps the toggle in the persistent data block), so the tool cannot read it and asks for a y/N confirmation of a three-item checklist: OEM unlocking ON, USB 2.0 cable/hub connected, phone backed up.
+3. In fastboot: `fastboot getvar unlocked` (stops if already yes), then `fastboot flashing get_unlock_ability`. A value of 0 aborts with instructions to reboot to Android and enable the toggle; only 1 continues to the serial-gated `fastboot flashing unlock`.
+
+Verified on 2026-11-19 with the phone in Android (`--dry-run`): developer options 1, USB debugging 1, OEM property not exposed, checklist shown. Real unlock still pending.
+
