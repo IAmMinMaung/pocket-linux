@@ -1,0 +1,155 @@
+#!/omamobile/busybox sh
+# Stage 1 of the dodge kexec chain-loader: Pocket Linux debug/fix variant of
+# Omarchy Mobile's device/dodge/chainload/init (MIT). Same contract: PID 1
+# from the kernel's built-in initramfs (CONFIG_CMDLINE_FORCE
+# rdinit=/omamobile/init), mounts only proc and sysfs, never opens a block
+# device, kexec -c -l into stage 2. Differences:
+#   * every message is also drawn on the panel with /omamobile/fbtext
+#     (ABL's splash framebuffer through /dev/mem), so a flashed boot can be
+#     read off the screen; stage 1 has no display driver and no console.
+#   * a memory.reg mismatch no longer holds and resets: the live reg is
+#     written into stage2.dtb with fdtput and both maps are shown.
+#   * holds are 120 s (kexec -l failed) and 120 s (kexec -e returned).
+B=/omamobile/busybox
+MUSL="/omamobile/lib/ld-musl-aarch64.so.1 --library-path /omamobile/lib"
+scr() {
+  echo "omamobile-chain: $*" > /dev/kmsg 2>/dev/null || true
+  /omamobile/fbtext "$*" 2>/dev/null || true
+}
+# The panel is command-mode DSI (nothing drawn into the splash buffer shows without a display driver) and
+# ABL/XBL clear RAM on every reboot (ramoops never survived), so on a flashed boot the ONLY readable signal is
+# TIME: how long the yellow "unlocked" screen stays before the phone resets (sysrq b) or goes dark (kexec).
+#   ~3 s            kernel up, init running
+#   +20 s then dark memory reg matched, kexec -e
+#   +45 s then dark memory reg differed, rewritten with fdtput, kexec -e
+#   90 s then reset fdtput failed        150 s then reset  kexec -l failed
+#   210 s then reset kexec -e returned   270 s then reset  refuse (block device / no memory reg)
+#   30 s then reset PID 1 died (panic=30 on the stage-1 cmdline)
+hold() {
+  scr "$1"
+  scr "holding $2 s, then reset (ABL falls back to slot A)"
+  $B sleep "$2"
+  echo b > /proc/sysrq-trigger
+  while :; do $B sleep 60; done
+}
+# The kernel does not mount devtmpfs for an initramfs (CONFIG_DEVTMPFS_MOUNT help text), and the cpio
+# only carries /dev/console: without this, fbtext (/dev/mem) and /dev/kmsg silently failed on every boot.
+$B mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+[ -c /dev/mem ] || $B mknod /dev/mem c 1 1 2>/dev/null || true
+[ -c /dev/kmsg ] || $B mknod /dev/kmsg c 1 11 2>/dev/null || true
+[ -c /dev/null ] || $B mknod /dev/null c 1 3 2>/dev/null || true
+$B mount -t proc proc /proc
+$B mount -t sysfs sysfs /sys 2>/dev/null || true
+/omamobile/fbtext -c "omamobile stage 1  Pocket Linux debug build $($B cat /omamobile/build-id 2>/dev/null)" 2>/dev/null \
+  || echo "omamobile-chain: fbtext unavailable (no /dev/mem?)" > /dev/kmsg
+scr "kernel: $($B uname -r)"
+# Stage 1 runs with ramoops at 0xfe000000 (kernel cmdline; inside ABL's splash reservation, which stays
+# untouched across a warm reset). Records from the PREVIOUS stage-1 boot show up in pstore now: copy them
+# raw to 0xff000000 (read from Ubuntu via /dev/mem) and show the tail on screen.
+PSTORE_PREV=/tmp/pstore-prev.txt
+$B mount -t pstore pstore /sys/fs/pstore 2>/dev/null || true
+n=$($B ls /sys/fs/pstore 2>/dev/null | $B wc -l)
+if [ "$n" -gt 0 ]; then
+  for f in /sys/fs/pstore/*; do echo "=== $f $($B stat -c %s "$f")"; $B cat "$f"; echo; done > $PSTORE_PREV
+  scr "pstore: $n record(s) from the previous stage-1 boot, $($B stat -c %s $PSTORE_PREV) bytes -> RAM 0xff000000"
+  # read()/write() on /dev/mem fail for no-map memory on arm64; memcp uses mmap like fbtext does
+  { echo "OMAMOBILE-PSTORE-PREV $($B stat -c %s $PSTORE_PREV)"; $B cat $PSTORE_PREV; } > /tmp/pstore-z.bin
+  /omamobile/memcp write 0xff000000 /tmp/pstore-z.bin 2>/dev/null || scr "memcp write to 0xff000000 failed"
+  scr "--- previous stage-1 console, last 30 lines ---"
+  $B grep -v '^=== ' $PSTORE_PREV | $B tail -n 30 | while read -r l; do scr "$l"; done
+  scr "--- end of previous console ---"
+else
+  scr "pstore: no records from a previous boot"
+fi
+scr "cmdline: $($B cat /proc/cmdline)"
+CMDLINE=$($B cat /omamobile/cmdline)
+SLOT_SUFFIX=
+SLOT_SRC=
+if [ -f /proc/bootconfig ]; then
+  n=$($B wc -l < /proc/bootconfig)
+  scr "/proc/bootconfig: $n lines"
+  $B grep -E 'slot_suffix|force_normal_boot|verifiedbootstate|bootdevice' /proc/bootconfig | while read -r l; do scr "  $l"; done
+else
+  scr "/proc/bootconfig: missing"
+fi
+if [ -f /proc/device-tree/chosen/bootargs ]; then
+  scr "chosen/bootargs: $($B cat /proc/device-tree/chosen/bootargs | $B tr '\0' ' ' | $B cut -c1-300)"
+else
+  scr "chosen/bootargs: missing"
+fi
+if [ -f /proc/device-tree/chosen/linux,initrd-start ]; then
+  scr "ABL initrd: present (start $($B hexdump -v -e '1/4 "%08x"' /proc/device-tree/chosen/linux,initrd-start) end $($B hexdump -v -e '1/4 "%08x"' /proc/device-tree/chosen/linux,initrd-end))"
+else
+  scr "ABL initrd: none"
+fi
+if [ -f /proc/bootconfig ]; then
+  SLOT_SUFFIX=$($B awk -F= '/^androidboot\.slot_suffix/ { v=$2; gsub(/^[ \t"]+|[ \t"]+$/, "", v); print v; exit }' /proc/bootconfig)
+  [ -n "$SLOT_SUFFIX" ] && SLOT_SRC=bootconfig
+fi
+if [ -z "$SLOT_SUFFIX" ] && [ -f /proc/device-tree/chosen/bootargs ]; then
+  for tok in $($B cat /proc/device-tree/chosen/bootargs | $B tr '\0' ' '); do
+    case $tok in androidboot.slot_suffix=*) SLOT_SUFFIX=${tok#androidboot.slot_suffix=}; SLOT_SRC=bootargs ;; esac
+  done
+fi
+if [ -z "$SLOT_SUFFIX" ] && [ -f /omamobile/slot_suffix ]; then
+  SLOT_SUFFIX=$($B cat /omamobile/slot_suffix); SLOT_SRC=packed
+fi
+case $SLOT_SUFFIX in
+  ""|_b) ;;
+  *) scr "slot_suffix=$SLOT_SUFFIX source=$SLOT_SRC not forwarded (only _b is)"; SLOT_SUFFIX= SLOT_SRC= ;;
+esac
+if [ -n "$SLOT_SUFFIX" ]; then
+  scr "slot_suffix=$SLOT_SUFFIX source=$SLOT_SRC"
+  tok="androidboot.slot_suffix=$SLOT_SUFFIX"
+  case " $CMDLINE " in *" $tok "*) ;; *) CMDLINE="$CMDLINE $tok" ;; esac
+  if [ -n "$SLOT_SRC" ]; then
+    tok="omamobile.slot_src=$SLOT_SRC"
+    case " $CMDLINE " in *" $tok "*) ;; *) CMDLINE="$CMDLINE $tok" ;; esac
+  fi
+else
+  scr "slot_suffix=(none) source=(none)"
+fi
+if $B grep -E '^/dev/sd' /proc/mounts >/dev/null 2>&1; then
+  hold "refuse: block device mounted in stage 1" 270
+fi
+scr "iomem: $($B grep -c 'System RAM' /proc/iomem) System RAM ranges"
+MEM_REG=""
+for cand in /proc/device-tree/memory/reg /proc/device-tree/memory@a0000000/reg /proc/device-tree/memory@*/reg; do
+  if [ -f "$cand" ]; then MEM_REG=$cand; break; fi
+done
+if [ -z "$MEM_REG" ] || [ ! -f /omamobile/memory.reg ]; then
+  hold "refuse: no memory reg to cmp" 270
+fi
+live=$($B hexdump -v -e '1/4 "%08x "' "$MEM_REG")
+packed=$($B hexdump -v -e '1/4 "%08x "' /omamobile/memory.reg)
+scr "memory node: ${MEM_REG#/proc/device-tree/}  ($(($($B stat -c %s "$MEM_REG") / 16)) ranges live, $(($($B stat -c %s /omamobile/memory.reg) / 16)) packed)"
+PAUSE=20
+if [ "$live" = "$packed" ]; then
+  scr "memory reg matches the pack-time copy"
+else
+  scr "memory reg DIFFERS from the pack-time copy"
+  scr "live:   $live"
+  scr "packed: $packed"
+  node=$($MUSL /omamobile/fdtget -l /omamobile/stage2.dtb / 2>/dev/null | $B grep '^memory' | $B head -1)
+  [ -n "$node" ] || node=memory@a0000000
+  words=$($B hexdump -v -e '1/4 "0x%08x "' "$MEM_REG")
+  # shellcheck disable=SC2086
+  if $MUSL /omamobile/fdtput -t x /omamobile/stage2.dtb "/$node" reg $words 2>/tmp/fdtput.err; then
+    scr "stage2.dtb /$node reg rewritten from the live map"
+    PAUSE=45
+  else
+    hold "fdtput failed: $($B cat /tmp/fdtput.err)" 90
+  fi
+fi
+KEXEC="$MUSL /omamobile/kexec"
+scr "kexec -c -l Image dtb initrd ..."
+if out=$($KEXEC -c -l /omamobile/Image --dtb=/omamobile/stage2.dtb \
+    --initrd=/omamobile/initrd --command-line="$CMDLINE" 2>&1); then
+  scr "kexec -l ok; stage 2 cmdline: $CMDLINE"
+  scr "kexec -e in $PAUSE s (20 = memory matched, 45 = rewritten)"
+  $B sleep $PAUSE
+  out=$($KEXEC -e 2>&1)
+  hold "kexec -e returned: $out" 210
+else
+  hold "kexec -l failed: $out" 150
+fi

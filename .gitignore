@@ -1,0 +1,20 @@
+# secrets: the SSH key baked into the built Linux images (the .pub is fine to commit)
+keys/omarchy-dodge_ed25519
+# firmware: proprietary OEM images, device dumps, build outputs (GBs) -- never committed
+firmware/images/
+firmware/patched/
+firmware/backup/
+firmware/stock/
+firmware/*.zip
+firmware/*.zip.part
+# large third-party inputs fetched by scripts/fetch-inputs.sh and kernel/stage1/fetch-sources.sh
+rootfs/*/*.tar.gz
+tools/
+kernel/src/
+# per-device / per-run state
+profiles/*
+!profiles/README.md
+!profiles/.gitkeep
+logs/*
+!logs/.gitkeep
+.DS_Store
