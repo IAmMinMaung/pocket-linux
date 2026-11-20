@@ -149,7 +149,7 @@ Artifacts: `firmware/images/omarchy-dodge-chain-*/boot-chain-install.img` (sha25
 `rdinit=/init clk_ignore_unused pd_ignore_unused panic=10 console=tty0`, i.e. hands over to the root on userdata);
 rootfs image `/root/out/rootfs-ubuntu-noble-dodge.img` built by `scripts/omarchy-build-phone.sh rootfs` (Ubuntu Base +
 systemd, NetworkManager, wpasupplicant, openssh, sudo, gdisk, linux-firmware, kernel modules
-7.3.0-rc6-omamobile-push1-g6cc4b65df980, user `min`/`oneplus13` with NOPASSWD sudo, SSH key = project key, ext4 label
+7.3.0-rc6-omamobile-push1-g6cc4b65df980, user `min`/`oneplus13` with NOPASSWD sudo (that build hard-coded the account; since 2026-11-19 `rootfs` asks for user name and password, see below), SSH key = project key, ext4 label
 `omamobile-root` so the Omarchy init grows it to the full 957 GB partition on first boot).
 
 Vendor firmware found on the running Android and staged into the rootfs under /lib/firmware (raw copies in
@@ -211,7 +211,7 @@ which is fatal even when unlocked. `fastboot boot` skips AVB entirely, which is 
 Omarchy Mobile's `bin/omamobile` says the same ("ABL ... refuses a chained partition with no footer at all") and
 adds footers via `AVB_FOOTERS` per device; its dodge `device.conf` never got that line.
 
-Fix: `kernel/stage1/add-avb-footer.sh <chain.img>` (avbtool 1.4.0 + AOSP test key, vendored in `tools/avb/`,
+Fix: `kernel/stage1/add-avb-footer.sh <chain.img>` (avbtool 1.4.0 + AOSP test key in `tools/avb/`, gitignored, fetched by `kernel/stage1/fetch-avb.sh`,
 same pins as Omarchy's toolchain.lock) pads the image to the 96 MiB partition and signs a hash footer with the
 stock parameters. `scripts/omarchy-install-slot-b.sh boot_b` now refuses an image without that footer.
 
@@ -336,3 +336,109 @@ The kernel text console (fbcon) caps fonts at 32 px, and TerminusBold 32x16 was 
 The user chose to redo the project from the beginning. `scripts/omarchy-install-slot-b.sh revert-stock` + `lock` (see `docs/bootloader.md`) put stock boot_b/init_boot_a back, wiped userdata (the Ubuntu rootfs, llama.cpp models, kmscon, Wi-Fi firmware set all lived there) and relocked the bootloader. Nothing in this document is on the phone any more; all build artifacts (`firmware/images/omarchy-dodge-*`, `kernel/stage1`, `kernel/stage2-modules`, `tools/avb`) and the recipes above remain valid for the redo.
 
 Cleanup 2026-11-19: artifacts kept are `omarchy-dodge-stage2-20261118-023859` (stage-2 kernel/dtb/initramfs), `omarchy-dodge-chain-20261118-025010` (first-light images, rootfs `.zst` only), `omarchy-dodge-chain-dbg-20261118-211811` (the footered image that was flashed) and `omarchy-dodge-modules-20261118-223011` (33 USB Wi-Fi modules). Intermediate debug builds, the Ollama tarball and the Docker build volume were removed; `kernel/stage1/build.sh` needs fresh source clones under `SRC_MAC` before it can run again.
+
+## 2026-11-19: no hard-coded credentials in the rootfs build
+
+At the user's request `scripts/omarchy-build-phone.sh rootfs` no longer bakes `min`/`oneplus13` into the image. It now
+asks on the Mac for the Linux user name (default: the Mac login name) and a password typed twice without echo;
+`OMARCHY_USER` / `OMARCHY_PASSWORD` in the environment skip the prompts for unattended rebuilds. Only the SHA-512
+crypt hash leaves the Mac (`openssl passwd -6`, or hashed inside the chroot if the Mac's openssl lacks `-6`); it travels
+as a root-only file (`/root/out/linux-user` in the build chroot, deleted from the image after `useradd -p`). The chosen
+name is kept in `/root/out/linux-user.name` so `verify-rootfs` can report on it; root stays locked (key-only SSH).
+`scripts/ubuntu-chroot-setup.sh` likewise prompts for its user name (`UBUNTU_USER` skips it; no password, the chroot is
+entered through Magisk su only). The chroot on the phone was created before this change and has user `min`.
+
+## 2026-11-19 night: Phase 3 redo started
+
+Chroot rebuilt (`scripts/ubuntu-chroot-setup.sh`, user `min`), `omarchy-build-phone.sh sources` restaged kernel
+`dodge-v3-20261101`, omarchy-mobile `17f9a3c`, mkbootimg `d2bb0af`, Alpine 3.24.2 + apks, live DTB and a freshly
+generated `keys/omarchy-dodge_ed25519`. First `stage2` launch died with "make: command not found": the old chroot's
+toolchain had been installed by hand. Added a `toolchain` step (clang/lld/llvm, make/bison/flex/bc, libssl/libelf/libdw,
+dtc/libfdt, lz4/zstd/cpio/rsync/kmod/dwarves, e2fsprogs/gdisk) that `stage2` runs first; relaunched, load average 12 on
+8 cores. Mac side: `kernel/stage1/fetch-sources.sh` cloned the three trees into `kernel/src/`, `kernel/stage1/fetch-avb.sh`
+restored `tools/avb/` (avbtool 1.4.0 at Omarchy's pinned commit ba2dec4b035b, checksums match their lock file).
+
+Results 2026-11-19 night: stage2 done 04:12 UTC (launch 03:49 UTC, ~23 min wall on 8 cores), release
+`7.3.0-rc6-omamobile-push1-g6cc4b65df980`, Image 43,395,584 B, dodge DTB 127,645 B (same sizes as 2026-11-18), 1789 modules.
+initramfs 6,597,348 B after adding Alpine's `e2fsprogs-extra` (resize2fs moved there; the `sources` apk list now includes
+it). chain pack done 04:27 UTC: `boot-chain.img` 62,853,120 B, header v4 kernel-only, sha256 0fd431d1…; pulled to
+`firmware/images/omarchy-dodge-20261119-225253/` with SHA256SUMS. Next: first light (RAM only) with that image.
+
+### FIRST LIGHT again — 2026-11-19 23:0x (redo, RAM only)
+
+The user ran `fastboot boot` with `omarchy-dodge-20261119-225253/chain_images_boot-chain.img` (the first-light script
+was still waiting for fastboot, so en13 never got 172.16.42.2). Result: `uname -a` over SSH =
+`Linux omamobile 7.3.0-rc6-omamobile-push1-g6cc4b65df980`, cmdline carries `omamobile.initramfs` and
+`androidboot.slot_suffix=_b`, simpledrm console 90x99 on the 1440x3168 panel, gadget functions `acm.GS0` + `ncm.usb0`,
+dropbear on port 22, UFS visible as /dev/sda*. Reaching it WITHOUT sudo on the Mac: the phone's IPv6 link-local is in
+`ndp -an | grep en13` (the non-permanent row), then
+`ssh -6 -i keys/omarchy-dodge_ed25519 root@fe80::<phone>%en13`. The test initramfs runs NO getty on ttyGS0
+(`console=tty0` only), so `screen /dev/cu.usbmodemomamobile3 115200` shows nothing until a shell is started on it:
+`nohup setsid sh -c 'while :; do /bin/sh -l </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done' &` over SSH (done this
+session; the Ubuntu rootfs enables serial-getty@ttyGS0 so this is only an initramfs quirk).
+
+### 2026-11-19 23:xx: rootfs build on the redo, three staging gaps closed
+
+The first `rootfs` launch (user `m-3`, prompted) died at once: `/root/dl/ubuntu-base-24.04.5-base-arm64.tar.gz` was not
+in the chroot (the old chroot had it from a manual copy). `sources` now pushes the Ubuntu Base tarball from `rootfs/`
+(and the step prints a note if it is missing). Second gap: the vendor firmware had been staged by hand in November 18's
+chroot. New step `omarchy-build-phone.sh vendor-fw` copies, from inside the chroot via `/proc/1/root`, Android's
+`/vendor/firmware_mnt/image/peach/` (72 files), `/vendor/bt_firmware/image/` (214), `/vendor/firmware/gen8*` (5), and
+reads `tmel_peach_10/20.elf` out of a `dd` copy of `modem_a` with 7z (Android's kernel refuses to loop-mount the 4 KiB-
+sector FAT16 from the chroot). The rootfs step now applies the mapping from the Wi-Fi table above (amss20→amss.bin,
+bdwlan.elf→board.bin, phy_ucode20.elf, aux_ucode20.elf→aux_ucode.bin, tmel_peach_*.elf) instead of the e01 guess, so
+Wi-Fi firmware is right at first boot. Third: the credential prompt needs a terminal; run `rootfs` from Terminal.app,
+not through Claude Code's `!` prefix (the script now says so instead of looping). The rootfs step was relaunched by
+re-running `/root/steps/rootfs.sh` with the stored root-only `/root/out/linux-user` (no second prompt).
+
+### 2026-11-20 00:10: install inputs ready (redo), phone in fastboot
+
+- rootfs: `omarchy-build-phone.sh rootfs` (user `m-3`, prompted) + firmware fix-up + re-image → `/root/out/rootfs-ubuntu-noble-dodge.img`
+  8 GiB, ext4 label omamobile-root, sha256 64e67593…; verify-rootfs: systemd/sshd/NetworkManager/sgdisk ok, 1789 modules,
+  669 MB firmware, ath12k hw2.0 dir has amss.bin(=amss20) board.bin(=bdwlan.elf) phy_ucode20.elf aux_ucode.bin tmel_peach_10/20.elf,
+  serial-getty@ttyGS0 + getty@tty1 + ssh enabled. NOTE: the user's rootfs step file predated the firmware-mapping edit, so the
+  mapping was applied afterwards to /root/rootfs and the image rebuilt (mkfs -d). Pulled via zstd (831 MB) to
+  `firmware/images/omarchy-dodge-rootfs-20261120-0603/rootfs-ubuntu-noble-dodge.img`, sha verified on the Mac.
+- stage-1 install image: Docker `kernel/stage1/build.sh` (two fixes in in-container.sh: artifact path prefix, `ls` of a
+  non-matching glob under set -e) → `firmware/images/omarchy-dodge-chain-dbg-20261120-054628/boot-chain-install-dbg.img`
+  62,328,832 B, no `omamobile.initramfs`; footer added → `boot-chain-install-dbg-avb.img` 96 MiB, sha256 41323c61….
+- GPT backup: `android-tool.sh backup` now also dumps head/tail of every LUN (`gpt/`); 6 LUNs in
+  `Original-PJZ110_16.0.5.703CN01-20261120-000539/gpt/`. `backup gpt` adds it to an existing dump (dispatch bug fixed: args
+  were not passed to cmd_backup).
+- preflight ok: slot a, unlocked, max-download 768 MiB, slot-successful a/b yes/no, retries 7/7. Next: the three gated writes.
+
+### 2026-11-20 00:15: first install attempt stopped by fastboot, nothing written
+
+`omarchy-install-slot-b.sh userdata` with the 8 GiB raw image: fastboot 37.0.3 on macOS printed
+`fastboot: error: Failed reading from userdata` before any "Sending" line, i.e. it could not read a raw image >= 4 GiB;
+nothing reached the phone (slot a, userdata intact, verified by rebooting into unchanged Android). The script still
+printed "userdata written" because the pipe into tee hid the exit status: every write now goes through `fb_write`,
+which dies unless fastboot exits 0 and prints "Writing '<part>' OKAY", and `userdata` refuses raw images >= 4 GiB.
+Fix for the image: `omarchy-build-phone.sh mkimage` (minimal ext4 from /root/rootfs, 2,041,577,472 B, same contents and
+firmware; the Omarchy init grows it to the whole partition on first boot) → `firmware/images/omarchy-dodge-rootfs-20261120-0613/`,
+sha256 37eec1cf… verified on the Mac. The 8 GiB copy was deleted.
+
+## 2026-11-20 00:25: native Ubuntu installed and booting from slot b (redo complete to the install)
+
+Writes (all `fb_write`-checked, serial-gated, run by the user): `userdata` ← minimal rootfs (two sparse chunks, Writing OKAY),
+`boot_b` ← `boot-chain-install-dbg-avb.img` (98304 KB, Writing OKAY), `set_active b`, reboot. Result over SSH as `m-3`
+(IPv6 link-local on en13, key `keys/omarchy-dodge_ed25519`): `Linux oneplus13 7.3.0-rc6-omamobile-push1`, Ubuntu 24.04.5,
+`systemctl is-system-running` = running, `/` = /dev/sda15 921 GB (grown by the Omarchy init from the 1.9 GB image),
+usb0 172.16.42.1/24, wlp1s0 present (ath12k firmware loaded, TME-Lite "result 1 err 83" as before), serial-getty@ttyGS0,
+ssh and NetworkManager active. GPT after the first boot: boot_b (sde48) attrs 0x0037… = priority 3, active, retry 6
+(one burned), NOT successful; boot_a (sde12) 0x007A… = priority 2, inactive, retry 7, successful. Pending: set bit 54 on
+sde48 (`blockdev --setrw /dev/sde; sgdisk -A 48:set:54 /dev/sde; blockdev --setro /dev/sde`), then a NetworkManager Wi-Fi
+profile with the user's SSID/password (never stored in the repo).
+
+### 2026-11-20 01:35: Wi-Fi up, two unplanned reboots explained (power button), retries at 4
+
+Wi-Fi: `sudo nmcli dev wifi connect "<SSID>" password "<pw>"` as `m-3` (plain `nmcli` is refused: no polkit in the minimal
+image, so NetworkManager only trusts root; `sudo` is NOPASSWD) → MRZ-Blast(AC), channel 149, 270 Mbit/s, 10.1.1.103/24, NTP
+synced, SSH over Wi-Fi `ssh -i keys/omarchy-dodge_ed25519 m-3@10.1.1.103`. The usb0 link-local changes every boot.
+
+Journal of boot -1: `systemd-logind: Power key pressed short. Powering off...` at 108 s. logind's default for the PMIC
+power key is poweroff; on USB power the phone boots again immediately, and every boot of a not-yet-successful slot burns
+an ABL retry: boot_b attrs went 0x0037 (retry 6) → 0x0027 (retry 4) over three boots. Fix applied live
+(`/etc/systemd/logind.conf.d/10-powerkey.conf`: HandlePowerKey=ignore, LongPress=ignore; `busctl get-property ... HandlePowerKey`
+= "ignore") and baked into the `rootfs` step. The GPT "successful" bit (54) on sde48 is still unset and must be set before
+the remaining 4 retries are used up; it is a partition-table write and waits for the user's explicit go.

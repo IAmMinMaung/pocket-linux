@@ -42,6 +42,15 @@ MSG
     printf 'Serial: '; read -r typed </dev/tty || die "no tty"
     [ "$typed" = "$SERIAL" ] || die "Serial did not match. Aborted."
 }
+# Run one fastboot write, log it, and stop unless fastboot exited 0 AND printed "Writing ... OKAY".
+# (fastboot 37.0.3 on macOS fails with "Failed reading from <part>" on raw images >= 4 GiB, before sending anything.)
+fb_write() { # $1 partition, $2 image
+    local out rc
+    out=$($FB flash "$1" "$2" </dev/null 2>&1); rc=$?
+    printf '%s\n' "$out" | tee -a "$LOG"
+    [ $rc -eq 0 ] && printf '%s\n' "$out" | grep -q "Writing '$1'.*OKAY" || die "fastboot flash $1 FAILED (exit $rc): nothing to trust on the device for this partition; see above"
+}
+
 to_fastboot() {
     if $FB devices </dev/null | grep -q "$SERIAL"; then return 0; fi
     if $ADB get-state </dev/null 2>/dev/null | grep -q device; then
@@ -54,8 +63,9 @@ to_fastboot() {
 }
 preflight() {
     say "Preflight"
-    local gpt; gpt=$(ls -d "$HERE"/firmware/images/Original-*-allfw-*/gpt 2>/dev/null | head -1)
-    [ -n "$gpt" ] && ls "$gpt"/sde-head.bin "$gpt"/sde-tail.bin >/dev/null || die "no GPT backup for sde (run the allfw backup first)"
+    local gpt; gpt=$(ls -d "$HERE"/firmware/images/Original-*/gpt 2>/dev/null | tail -1)
+    [ -n "$gpt" ] && ls "$gpt"/sd?-head.bin "$gpt"/sd?-tail.bin >/dev/null 2>&1 || die "no GPT backup (scripts/android-tool.sh backup gpt, from rooted Android)"
+    say "GPT backup: ${gpt#$HERE/} ($(ls "$gpt"/*-head.bin | wc -l | tr -d ' ') LUNs)"
     [ -n "$(stock_dir)" ] || die "no stock images of this phone (scripts/android-tool.sh backup, then copy the active-slot set to firmware/images/Original-<build>-device-stock/)"
     [ -f "$HERE/keys/omarchy-dodge_ed25519" ] || die "no keys/omarchy-dodge_ed25519 (the key baked into the rootfs/initramfs by omarchy-build-phone.sh)"
     to_fastboot
@@ -70,7 +80,8 @@ userdata)
     file "$img" | tee -a "$LOG" | grep -q -E 'ext4|ext2|Android sparse' || die "$img is not an ext4 or sparse image"
     preflight
     confirm "fastboot flash userdata $(basename "$img")  — ERASES all Android data (apps, photos, the Ubuntu chroot)"
-    $FB flash userdata "$img" </dev/null 2>&1 | tee -a "$LOG"
+    sz=$(stat -f %z "$img"); [ "$sz" -lt 4294967296 ] || die "$img is $sz bytes: fastboot on macOS cannot read raw images >= 4 GiB. Use the minimal image from 'omarchy-build-phone.sh mkimage' (the Omarchy init grows it to the whole partition on first boot)."
+    fb_write userdata "$img"
     say "userdata written" ;;
 boot_b)
     img=${2:?boot-chain-install.img}; [ -f "$img" ] || die "no $img"
@@ -90,7 +101,7 @@ print("boot_b image ok:", len(b), "bytes, kernel", ks, "bytes, AVB footer with v
 PY
     preflight
     confirm "fastboot flash boot_b $(basename "$img")  (slot a's boot_a is untouched)"
-    $FB flash boot_b "$img" </dev/null 2>&1 | tee -a "$LOG"
+    fb_write boot_b "$img"
     say "boot_b written" ;;
 activate)
     preflight
@@ -102,16 +113,17 @@ activate)
 revert-stock)
     ST=$(stock_dir); [ -n "$ST" ] || die "no stock images"
     # The stock set must be THIS phone's own dump (byte-identical to what the OEM signed), checked two ways:
-    # its SHA256SUMS, and tools/avb/check-stock-avb.py proving init_boot matches the hash descriptor in vbmeta and
+    # its SHA256SUMS, and scripts/avb-verify.py proving init_boot matches the hash descriptor in vbmeta and
     # boot's AVB footer is signed with the key vbmeta chains to. Only then will a LOCKED bootloader accept the bytes.
     say "stock set: ${ST#$HERE/}"
     (cd "$ST" && shasum -a 256 -c SHA256SUMS 2>&1 | grep -E 'Original-(boot|init_boot|vbmeta)\.img' | tee -a "$LOG" | grep -qv ': OK$' && exit 1; true) || die "SHA256SUMS mismatch in $ST"
-    python3 -I "$HERE/tools/avb/check-stock-avb.py" "$ST" boot init_boot | tee -a "$LOG" || die "stock images fail the AVB check: do not flash, do not lock"
+    python3 -I "$HERE/scripts/avb-verify.py" "$ST/Original-vbmeta.img" "$ST/Original-boot.img" "$ST/Original-init_boot.img" > "$LOG.avb" 2>&1; rc=$?
+    cat "$LOG.avb" | tee -a "$LOG"; rm -f "$LOG.avb"; [ "$rc" = 0 ] || die "stock images fail the AVB check: do not flash, do not lock"
     preflight
     confirm "fastboot flash boot_b Original-boot.img  (stock boot over the Linux chain image; Linux on slot b is gone after this)"
-    $FB flash boot_b "$ST/Original-boot.img" </dev/null 2>&1 | tee -a "$LOG"
+    fb_write boot_b "$ST/Original-boot.img"
     confirm "fastboot flash init_boot_a Original-init_boot.img  (stock over Magisk; root is gone after this)"
-    $FB flash init_boot_a "$ST/Original-init_boot.img" </dev/null 2>&1 | tee -a "$LOG"
+    fb_write init_boot_a "$ST/Original-init_boot.img"
     confirm "fastboot set_active a  (stock Android slot; it will stop in stock recovery asking to Format data because userdata holds the ext4 rootfs)"
     $FB set_active a </dev/null 2>&1 | tee -a "$LOG"
     say "current-slot now: $($FB getvar current-slot 2>&1 </dev/null | awk -F': ' '/current-slot/{print $2}')  slot-successful a: $($FB getvar slot-successful:a 2>&1 </dev/null | awk -F': ' '/slot-successful/{print $2}')"

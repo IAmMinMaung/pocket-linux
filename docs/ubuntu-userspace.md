@@ -15,7 +15,7 @@ a native Linux install (see `docs/linux-compatibility.md` for that status).
 | `scripts/ubuntu-chroot-setup.sh` (Mac) | idempotent setup/reinstall script, runs everything over adb + Magisk su |
 | `tools/apk/` (Mac) | Termux v0.118.3 official APK, SHA-256 verified; installed on the phone |
 
-User `min` exists inside Ubuntu with passwordless sudo and is in group `aid_inet`
+User `min` (the name is prompted by the setup script since 2026-11-19, `UBUNTU_USER` skips the prompt) exists inside Ubuntu with passwordless sudo and is in group `aid_inet`
 (3003), which Android requires for any process that opens network sockets.
 `_apt` is in that group too, so apt works.
 

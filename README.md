@@ -7,6 +7,8 @@ Android to root (Magisk) and on to a self-booting mainline Linux (Omarchy Mobile
 userdata, slot b), and back to locked stock. Everything that writes to the phone asks for the phone's serial first.
 Read `CLAUDE.md` for the full state of the project and the safety rules; `docs/` has the per-phase write-ups.
 
+**Want to reproduce it?** `docs/ONEPLUS13-step-by-step.md` is the copy-paste runbook: every command from a locked stock OnePlus 13 to native Ubuntu booting from slot b, in the order that worked on 2026-11-19/20. `docs/ONEPLUS13-revert-to-stock.md` is the matching undo: back to stock Android with the bootloader locked.
+
 ## What you need
 
 - macOS on Apple Silicon (scripts are bash 3.2 / zsh friendly; GNU-only options are avoided), Docker Desktop for the
@@ -39,5 +41,5 @@ Phase 3, Linux: `scripts/ubuntu-chroot-setup.sh` (Ubuntu chroot on the phone, us
 ## Safety
 
 - Never flash xbl/abl/tz, modem, persist or vbmeta. Never flash images from an older build (anti-rollback).
-- Never relock with a non-stock partition present: `tools/avb/check-stock-avb.py` proves a stock set against vbmeta.
+- Never relock with a non-stock partition present: `scripts/avb-verify.py` proves a stock set against vbmeta.
 - On this phone never hold Volume Up + Volume Down (EDL mode). Fastboot is Power + Volume Down from off.

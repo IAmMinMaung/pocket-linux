@@ -125,7 +125,7 @@ check *Installed: N/A* (expected before rooting) and that the app version is
 current. To install or update on a fresh device:
 
 1. `scripts/fetch-inputs.sh` downloads `tools/apk/Magisk-v31.1.apk` from the official GitHub release and checks its
-   sha256 (recorded in `tools/apk/magisk_sha256sums.txt`; see `DOWNLOADS.md`).
+   sha256 (recorded in `checksums/inputs.sha256`; see `DOWNLOADS.md`).
 2. `tools/platform-tools/adb install tools/apk/Magisk-v31.1.apk`
 
 ## Step 6 — Patch and flash with the tool
@@ -160,7 +160,7 @@ Then rerun `scripts/android-tool.sh discover`; it records `ROOTED=yes`.
 Optionally back up the now-readable partitions:
 
 ```bash
-scripts/android-tool.sh backup       # dumps boot/init_boot/vbmeta to firmware/backup/<timestamp>/
+scripts/android-tool.sh backup       # dumps every boot-chain partition on both slots to firmware/images/Original-<build>-<timestamp>/
 ```
 
 ## If it goes wrong
@@ -177,3 +177,24 @@ scripts/android-tool.sh backup       # dumps boot/init_boot/vbmeta to firmware/b
 - **Taking an OTA while keeping root** (method from the XDA PJZ110 guide): download the full OTA, Settings › Software Update › three-dot menu › Local Install, let it finish but do **not** tap Restart. Open Magisk (or KernelSU) › Install › *Install to inactive slot*, accept the warning, do not reboot from the app. Go back to the updater and tap Restart. The new system boots already rooted. If this is skipped, the OTA removes root and step 6 must be repeated with the new build's `init_boot`.
 - Do not relock the bootloader while any partition is modified.
 - Banking and payment apps may refuse to run; Magisk's *Zygisk* + *DenyList* can hide root from selected apps.
+
+## 2026-11-19 redo: Phase 2 done again
+
+Sequence on the freshly re-unlocked phone (see `docs/bootloader.md`): `extract-boot` on the MD5-verified C.88 OTA
+(`firmware/images/Original-V.559d893-32cee1f-32dd63c-from-OTA/`, build matches the phone's incremental), Magisk v31.1 APK
+fetched by `scripts/fetch-inputs.sh` (sha256 and signer CN=John Wu verified) and installed with `adb install`, then
+`scripts/android-tool.sh root` run by the user. First attempt stopped at "No magisk_patched-*.img found" because Enter was
+pressed before patching in the app; second run pulled `Download/magisk_patched-31100_LEPx9.img`, rebooted to fastboot
+(USB 2.0 hub), `fastboot flash init_boot` → "Writing 'init_boot' OKAY" (the preceding "Fetching super … unknown command"
+line is a harmless fastboot pre-check this bootloader lacks), reboot. `magisk -v` → 31.1:MAGISK:R.
+
+`su -c id` was denied instantly (0 s, no prompt) three times; the Superuser tab listed a **Shell** entry switched off.
+Turning it on fixed it: `uid=0(root) gid=0(root) context=u:r:magisk:s0`. ColorOS pop-up permissions were not the cause.
+
+`backup` then dumped both slots over su to `firmware/images/Original-PJZ110_16.0.5.703CN01-20261119-181020/`. Checks:
+init_boot_a is byte-identical to the Magisk image; every other partition is identical on slots a and b. Slot b was copied to
+`firmware/images/Original-PJZ110_16.0.5.703CN01-device-stock/` and `STOCK_DIR` points there, so `restore init_boot` flashes
+the phone's own stock. `scripts/avb-verify.py` (new, stdlib replacement for the deleted `tools/avb/check-stock-avb.py`)
+confirms that set against the phone's vbmeta: init_boot/vendor_boot hash descriptors match, boot/dtbo/recovery footers match
+and carry the chained key. The patched init_boot fails the check (expected) and so does the CDN OTA's init_boot: it is a
+different compile, so only the on-device dump is lock-safe.

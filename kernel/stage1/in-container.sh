@@ -5,10 +5,12 @@
 set -euo pipefail
 W=/work; M=/mnt/mac; P=/mnt/project
 # Stage-2 artifacts: newest omarchy-dodge-stage2-* unless STAGE2_SRC names one (relative to the project).
-STAGE2_SRC=$P/${STAGE2_SRC:-$(cd $P/firmware/images && ls -d omarchy-dodge-stage2-* 2>/dev/null | sort | tail -1)}
+STAGE2_SRC=$P/${STAGE2_SRC:-firmware/images/$(cd $P/firmware/images && ls -d omarchy-dodge-stage2-* 2>/dev/null | sort | tail -1)}
 [ -f "$STAGE2_SRC/Image" ] || { echo "no stage-2 artifacts under firmware/images/omarchy-dodge-stage2-*/ (scripts/omarchy-build-phone.sh stage2/initramfs/pull)"; exit 1; }
 # Live Android device tree (the phone's /sys/firmware/fdt, dumped as root): memory map for stage 2.
-LIVE_SRC=${LIVE_DTB:-$(ls $P/firmware/images/Original-*-allfw-*/live-fdt-android.dtb $P/firmware/images/*/live.dtb 2>/dev/null | head -1)}
+# (ls of a non-matching glob exits 2; with set -e/pipefail that used to kill the script silently, hence the || true)
+live_default=$( (ls $P/firmware/images/Original-*-allfw-*/live-fdt-android.dtb $P/firmware/images/*/live.dtb 2>/dev/null || true) | head -1 )
+LIVE_SRC=${LIVE_DTB:-$live_default}
 [ -f "$LIVE_SRC" ] || { echo "no live DTB: adb shell su -c 'cat /sys/firmware/fdt' > firmware/images/<dump-dir>/live-fdt-android.dtb, or set LIVE_DTB"; exit 1; }
 say() { printf '\n==> %s\n' "$*"; }
 

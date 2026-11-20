@@ -16,6 +16,7 @@ scripts/fetch-inputs.sh ota      # stock OTA only (same as scripts/download-stoc
 | Magisk v31.1 app (Phase 2: patches init_boot on the phone; installed with `adb install`, not sideloaded) | `tools/apk/Magisk-v31.1.apk` | sha256 `89cefac0a318afa39fb3880c45c87b036c05bc1ebf02a7a715b7f8d7c26ac6e7`, APK signer CN=John Wu, cert sha256 `B4:CB:83:B4:DA:D9:9F:99:7D:BE:87:2F:01:3A:A1:6C:14:EE:C4:1D:16:70:21:F3:71:F7:E1:33:0F:27:3E:E6` |
 | OnePlus 13 PJZ110 full OTA, ColorOS 16.0.5.703(CN01) build C.88 (stock boot/init_boot/vendor_boot/vbmeta for Phase 2) | `firmware/images/PJZ110_16.0.5.703_CN01_C88.zip` | md5 `2cc8031b2589dd4e80bd3c93326c7c7e`, 8769806346 bytes |
 | Google Platform-Tools (adb, fastboot), latest macOS build | `tools/platform-tools/` | fetched by `scripts/android-tool.sh env` |
+| avbtool 1.4.0 + AOSP test key `testkey_rsa4096.pem` (Phase 3: AVB footer on the flashed boot_b chain image; same pin as Omarchy Mobile `tools/toolchain.lock`, platform/external/avb commit ba2dec4b035b) | `tools/avb/` | sha256 in `checksums/inputs.sha256`; fetched by `kernel/stage1/fetch-avb.sh` |
 | Kernel + Omarchy Mobile + mkbootimg sources | `kernel/src/` on the Mac, `/root/src` in the phone chroot | `kernel/stage1/fetch-sources.sh`, `scripts/omarchy-build-phone.sh sources` (tag `dodge-v3-20261101`) |
 
 ## Links
@@ -25,7 +26,7 @@ scripts/fetch-inputs.sh ota      # stock OTA only (same as scripts/download-stoc
 - Termux: https://github.com/termux/termux-app/releases/tag/v0.118.3
 - Magisk: https://github.com/topjohnwu/Magisk/releases/tag/v31.1 (official source only; v31.1 is the version that rooted
   this phone). Install: `tools/platform-tools/adb install tools/apk/Magisk-v31.1.apk`. A newer release is fine as long as
-  the checksum file `tools/apk/magisk_sha256sums.txt` and the URL in `scripts/fetch-inputs.sh` are updated together.
+  the checksum file `checksums/inputs.sha256` and the URL in `scripts/fetch-inputs.sh` are updated together.
 - Stock OTA, OPPO component OTA CDN (signed link, can expire):
   `https://component-ota-cn.allawntech.com/downloadCheck?c=6ae1589edf7d7740a1f42a85b4a954d0&p=a6c78fdd3751888b39cedbfe149a30629674fce84a6354fe8dbe00ecc720049aefbc31dbee706571eb6fd3282179&d=e181cd82745f88956e8098ec0182623bca30a2a51b7b03ead6e04ce9ca7400d5b4e921c5b4276d&g=10eab6008d5642cf42abd2aa41f847cb&id=69eb51609e207b01827c1fdf&taste=0&supportDLTaste=0&mode=1&tr=manual&s=7af4672db658251c0f05ebba2d4e1ae2`
   Download with `scripts/download-stock-ota.sh`: the CDN resets long connections, so it fetches 128 MiB byte-range

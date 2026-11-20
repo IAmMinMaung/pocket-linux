@@ -20,6 +20,7 @@
 #   rom <rom.zip>               Sideload a custom ROM zip through recovery (checks target device)
 #   restore <partition>         Flash the stock image for a partition back (boot, init_boot, vbmeta…)
 #   backup [recovery.img]       Dump live partitions (needs root, or a recovery that fastboot boot
+#                               backup gpt: only the GPT head/tail of every LUN, into the LAST_BACKUP dump
 #                               accepts; on this OnePlus 13 temp-boot failed, use extract-boot)
 #   reboot <system|bootloader|fastbootd|recovery|sideload>
 #
@@ -249,9 +250,19 @@ cmd_env() {
     say "Device state: $(device_state)"
 }
 
+# discover rewrites the profile from scratch; keep the keys other commands appended (stock set, last dump).
+profile_keep_extras() { # $1 = snapshot file; call before the rewrite with "save", after it with "restore"
+    case "$1" in
+        save)    [ -f "$PROFILE_ENV" ] && grep -E '^(STOCK_BUILD|STOCK_DIR|LAST_BACKUP)=' "$PROFILE_ENV" | awk -F= '!seen[$1]++' > "$2" || : > "$2" ;;
+        restore) [ -s "$2" ] && cat "$2" >> "$PROFILE_ENV"; rm -f "$2" ;;
+    esac
+}
+
 cmd_discover() {
     need_cmd adb "Run: $0 env"
-    local state ts
+    local state ts extras
+    extras="$LOG_DIR/.profile-extras.$$"
+    profile_keep_extras save "$extras"
     state=$(device_state)
     ts=$(date '+%Y-%m-%d %H:%M:%S %Z')
     say "Device state: $state"
@@ -270,6 +281,7 @@ cmd_discover() {
             echo "CURRENT_SLOT=$(fb_var current-slot)"
             echo "HAS_INIT_BOOT=$(fastboot getvar partition-type:init_boot 2>&1 | grep -q 'partition-type' && echo yes || echo no)"
         } > "$PROFILE_ENV"
+        profile_keep_extras restore "$extras"
         note "Only partial profile possible from fastboot. Reboot to Android and rerun for full details."
         return
     fi
@@ -297,6 +309,7 @@ cmd_discover() {
         echo "HAS_INIT_BOOT=$has_init_boot"
         echo "ROOTED=$(adb shell 'command -v su >/dev/null 2>&1 && echo yes || echo no' 2>/dev/null | tr -d '\r')"
     } > "$PROFILE_ENV"
+    profile_keep_extras restore "$extras"
 
     adb shell ls -la /dev/block/by-name/ > "$LOG_DIR/partitions-by-name.txt" 2>&1 || \
         note "Could not list /dev/block/by-name (needs root on many devices)."
@@ -672,6 +685,23 @@ latest_recovery_img() {
     ls -t "$IMAGES_DIR"/*/recovery.img 2>/dev/null | head -n1
 }
 
+# GPT head (first 1 MiB: protective MBR, header, entries) and tail (last 1 MiB: backup entries + header) of every
+# UFS LUN, so a damaged partition table can be put back with dd. Needed by omarchy-install-slot-b.sh preflight.
+dump_gpt() { # $1 = root shell prefix, $2 = destination dir
+    local pre=$1 dest=$2/gpt lun size
+    mkdir -p "$dest"
+    for lun in $(adb shell "$pre 'ls /dev/block/ | grep -E \"^sd[a-z]\$\"'" 2>/dev/null | tr -d '\r'); do
+        size=$(adb shell "$pre 'blockdev --getsize64 /dev/block/$lun'" 2>/dev/null | tr -d '\r')
+        case "$size" in ''|*[!0-9]*) continue ;; esac
+        if [ "$DRY_RUN" = 1 ]; then note "(dry-run) would dump GPT head/tail of $lun ($size bytes)"; continue; fi
+        adb exec-out "$pre 'dd if=/dev/block/$lun bs=1048576 count=1 2>/dev/null'" > "$dest/$lun-head.bin"
+        adb exec-out "$pre 'dd if=/dev/block/$lun bs=1048576 skip=$(( size / 1048576 - 1 )) count=1 2>/dev/null'" > "$dest/$lun-tail.bin"
+        note "ok     gpt/$lun-head.bin + $lun-tail.bin  (LUN $size bytes)"
+    done
+    adb shell "$pre 'ls -la /dev/block/by-name/'" 2>/dev/null | tr -d '\r' > "$dest/by-name.txt"
+    [ "$DRY_RUN" = 1 ] || (cd "$dest" && shasum -a 256 ./*.bin > SHA256SUMS 2>/dev/null || true)
+}
+
 dump_partitions() {
     # $1 = shell prefix for root ("" in recovery, "su -c" on a rooted system)
     local pre=$1 ts dest p size got failed=0 build
@@ -705,6 +735,8 @@ dump_partitions() {
             mv "$dest/Original-$p.img" "$dest/Original-$p.img.INCOMPLETE"; failed=1
         fi
     done
+    say "GPT of every LUN"
+    dump_gpt "$pre" "$dest"
     [ "$DRY_RUN" = 1 ] && return 0
     (cd "$dest" && shasum -a 256 ./*.img > SHA256SUMS 2>/dev/null || true)
     [ -f "$PROFILE_ENV" ] && cp "$PROFILE_ENV" "$dest/device-profile.env"
@@ -728,6 +760,13 @@ cmd_backup() {
     need_cmd adb "Run: $0 env"
     profile_require
     state=$(device_state)
+    if [ "$img" = gpt ]; then
+        local bk; bk=$(profile_path LAST_BACKUP)
+        [ -n "$bk" ] && [ -d "$bk" ] || die "no LAST_BACKUP dump to add the GPT to; run: $0 backup"
+        [ "$state" = device ] && adb shell 'su -c id' 2>/dev/null | grep -q 'uid=0' || die "needs a rooted Android (su)"
+        say "Dumping GPT head/tail of every LUN into ${bk#$PROJECT_DIR/}/gpt"
+        dump_gpt "su -c" "$bk"; return
+    fi
     case "$state" in
         device)
             if adb shell 'command -v su' >/dev/null 2>&1 && adb shell 'su -c id' 2>/dev/null | grep -q 'uid=0'; then
@@ -791,7 +830,7 @@ case "$cmd" in
     recovery)     cmd_recovery "$@" ;;
     rom)          cmd_rom "$@" ;;
     restore)      cmd_restore "$@" ;;
-    backup)       cmd_backup ;;
+    backup)       cmd_backup "$@" ;;
     reboot)       cmd_reboot "$@" ;;
     help|-h|--help) awk 'NR>1 && !/^#/ {exit} NR>1 {sub(/^# ?/, ""); print}' "$0" ;;
     *) die "Unknown command '$cmd'. Run: $0 help" ;;

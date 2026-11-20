@@ -1,0 +1,7 @@
+# sha256 of every input scripts/fetch-inputs.sh downloads (see DOWNLOADS.md for links).
+# Verify by hand: shasum -a 256 -c checksums/inputs.sha256 from the download directory.
+a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2  ubuntu-base-24.04.5-base-arm64.tar.gz
+72fdb596045116bf5ba1b5bdf5b26fddb9acc0bd074ad9f2da9eb0ae85e83a4e  termux-app_v0.118.3+github-debug_arm64-v8a.apk
+89cefac0a318afa39fb3880c45c87b036c05bc1ebf02a7a715b7f8d7c26ac6e7  Magisk-v31.1.apk
+1aa6f2b462aa67aa3fdf488bee83ab517de8ad9d8228c7b45c35267ab2cf6781  avbtool.py
+6a224754880a57ab9cbd308267cd157d94cf05a1c8cb851aec4090e045d24121  testkey_rsa4096.pem

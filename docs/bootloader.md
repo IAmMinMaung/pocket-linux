@@ -1,19 +1,19 @@
 # Bootloader Status
 
-Recorded 2026-11-13 from `scripts/android-tool.sh discover` (regenerate with `scripts/android-tool.sh discover`, output `profiles/device-profile.md`).
+Recorded 2026-11-13, refreshed 2026-11-20 after the second revert and relock, from `scripts/android-tool.sh discover` (regenerate with `scripts/android-tool.sh discover`, output `profiles/device-profile.md`).
 
 | Item | Value |
 |------|-------|
 | Device | OnePlus 13 (一加 13), model PJZ110, codename OP5D0DL1, platform `sun` (Qualcomm) |
 | Build | PJZ110_16.0.5.703(CN01), OTA PJZ110_11.C.88_1880_202604101200, Android 16, patch 2026-03-01 |
-| `ro.boot.flash.locked` | 0 (unlocked) |
-| `ro.boot.verifiedbootstate` | orange (unlocked, unsigned boot allowed) |
-| `ro.boot.vbmeta.device_state` | unlocked |
+| `ro.boot.flash.locked` | 1 (locked, since the 2026-11-20 revert) |
+| `ro.boot.verifiedbootstate` | green |
+| `ro.boot.vbmeta.device_state` | locked |
 | Active slot | `_a` (A/B, dynamic partitions) |
 | Partitions of interest | boot_a/b, init_boot_a/b, recovery_a/b, vbmeta_a/b, vbmeta_system_a/b, vbmeta_vendor_a/b |
 | Developer options | enabled |
 | USB debugging | enabled, this Mac authorized |
-| Root | Magisk 31.1, flashed 2026-11-18 to init_boot (slot a) from `firmware/patched/Original-V.559d893-32cee1f-32dd63c-from-OTA-init_boot-magisk.img`; daemon confirmed via `magisk -v` |
+| Root | none (stock, after the 2026-11-20 revert and relock) |
 
 The bootloader was already unlocked when this project started. The user unlocked it themselves beforehand (guided by ChatGPT) with the plain route: OEM unlocking toggle in Developer options, then `fastboot flashing unlock` (wipes the device). No Deep Testing (深度测试) app or OnePlus approval was involved on this PJZ110/C.88 unit, so a relocked phone can be unlocked again the same way as long as OEM unlocking is turned on first. (An earlier version of this note assumed Deep Testing; that was wrong.) If the device is ever relocked (`fastboot flashing lock`), only stock, unmodified partitions must be present or it will not boot.
 
@@ -48,5 +48,13 @@ To unlock again: Developer options > OEM unlocking ON, then `scripts/android-too
 2. `getprop sys.oem_unlock_allowed`: 1 passes, 0 aborts. On this PJZ110 the property is empty (OnePlus keeps the toggle in the persistent data block), so the tool cannot read it and asks for a y/N confirmation of a three-item checklist: OEM unlocking ON, USB 2.0 cable/hub connected, phone backed up.
 3. In fastboot: `fastboot getvar unlocked` (stops if already yes), then `fastboot flashing get_unlock_ability`. A value of 0 aborts with instructions to reboot to Android and enable the toggle; only 1 continues to the serial-gated `fastboot flashing unlock`.
 
-Verified on 2026-11-19 with the phone in Android (`--dry-run`): developer options 1, USB debugging 1, OEM property not exposed, checklist shown. Real unlock still pending.
+Verified on 2026-11-19 with the phone in Android (`--dry-run`): developer options 1, USB debugging 1, OEM property not exposed, checklist shown.
 
+## 2026-11-19: re-unlocked (redo, Phase 1 complete)
+
+Starting state: stock C.88, `ro.boot.flash.locked=1`, verifiedbootstate green, slot `_a` (see "relocked" above). The user turned OEM unlocking ON in Developer options, then ran `scripts/android-tool.sh unlock` in their own terminal: pre-flight passed, phone rebooted to fastboot over the USB 2.0 hub, `get_unlock_ability` 1, `fastboot flashing unlock` serial-gated and confirmed on the phone's screen, data wiped. After the setup wizard, adb showed the device but every shell call returned `error: closed` until USB debugging was re-enabled (expected after a wipe). Result over adb: `ro.boot.flash.locked=0`, `ro.boot.verifiedbootstate=orange`, `ro.boot.vbmeta.device_state=unlocked`, slot `_a`, build PJZ110_16.0.5.703(CN01) unchanged. No Deep Testing step was needed, confirming the note above. Rollback: `scripts/omarchy-install-slot-b.sh lock` once the boot-chain partitions are stock.
+
+
+## 2026-11-20: reverted to stock and relocked again (end of the redo)
+
+After the redo reached native Ubuntu on slot b (see `docs/linux-compatibility.md`), the user asked to restore the phone to locked Android. Sequence, now written up as `docs/ONEPLUS13-revert-to-stock.md`: stock set `firmware/images/Original-PJZ110_16.0.5.703CN01-device-stock/` re-verified (SHA256SUMS OK; `scripts/avb-verify.py`: boot footer signed by the chained key, init_boot matches the vbmeta hash descriptor); Ubuntu rebooted into the bootloader via `/run/systemd/reboot-param` (`systemctl reboot bootloader` is rejected as "Too many arguments" on this systemd); fastboot showed slot b active, unlocked, slot a still successful. The user ran `scripts/omarchy-install-slot-b.sh revert-stock` (boot_b, init_boot_a, set_active a, reboot), let stock recovery format data, set Android up with OEM unlocking and USB debugging on, then `… lock`. Result over adb at 13:05: `ro.boot.flash.locked=1`, `verifiedbootstate=green`, `vbmeta.device_state=locked`, slot `_a`, build PJZ110_16.0.5.703(CN01), `release-keys`, no su/magisk. `discover` refreshed the profile (STOCK_DIR/LAST_BACKUP kept). To unlock again: OEM unlocking ON, then `scripts/android-tool.sh unlock`.
