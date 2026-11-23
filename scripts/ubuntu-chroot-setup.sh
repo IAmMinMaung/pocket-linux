@@ -61,8 +61,10 @@ m /proc    -t proc proc
 m /sys     -t sysfs sysfs
 m /tmp     -t tmpfs -o mode=1777 tmpfs
 $BB mkdir -p "$R/mnt/sdcard"; m /mnt/sdcard -o bind /storage/emulated/0
-if [ $# -eq 0 ]; then set -- /bin/bash -l; fi
-exec $BB chroot "$R" /usr/bin/env -i HOME=/root TERM="${TERM:-xterm-256color}" LANG=C.UTF-8 \
+# An interactive login gets its own session with the terminal as controlling tty: Magisk su hands over
+# a pty that is not one, and bash then starts with "cannot set terminal process group / no job control".
+TTY=""; if [ $# -eq 0 ]; then set -- /bin/bash -l; [ -t 0 ] && TTY="$BB setsid -c"; fi
+exec $TTY $BB chroot "$R" /usr/bin/env -i HOME=/root TERM="${TERM:-xterm-256color}" LANG=C.UTF-8 \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
 LAUNCH
 push_root "$STAGE" $R/start.sh 755
@@ -86,6 +88,6 @@ su_sh "$R/start.sh /bin/bash -c 'head -2 /etc/os-release; uname -m; nproc; curl 
 rm -f "$STAGE"
 echo
 echo "Ubuntu chroot ready."
-echo "  From the Mac:   tools/platform-tools/adb shell su -c /data/local/ubuntu/start.sh"
+echo "  From the Mac:   tools/platform-tools/adb shell -t su -c /data/local/ubuntu/start.sh"
 echo "  From Termux:    su -c /data/local/ubuntu/start.sh      (grant Termux root in Magisk when asked)"
 echo "  As $USER_NAME:  su -c '/data/local/ubuntu/start.sh su - $USER_NAME'"

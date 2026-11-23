@@ -84,15 +84,33 @@ in the Terminal. The script pulls the patched image, reboots to fastboot and ask
 scripts/android-tool.sh root
 ```
 
-After the reboot, open the Magisk app once (it should read "Installed 31.1"). Then test root:
+After the reboot, open the Magisk app once (it should read "Installed 31.1"). If it asks to finish additional setup,
+accept and let it reboot.
 
-```bash
-tools/platform-tools/adb shell su -c id          # expect uid=0(root) ... context=u:r:magisk:s0
-```
+**Allow root for adb (the "Shell" step).** Magisk on this phone denies the first `su` request from adb instantly,
+without showing a prompt, so the grant has to be switched on by hand:
 
-If it prints `Permission denied` instantly with no prompt on the phone: Magisk → **Superuser** tab → turn the **Shell**
-entry on, then run the test again. Finally, back up the phone's own partitions (both slots plus the GPT of every LUN)
-and refresh the profile:
+1. Ask for root once so that Magisk records the request (it prints `Permission denied`; that is expected):
+
+   ```bash
+   tools/platform-tools/adb shell su -c id
+   ```
+
+2. On the phone open **Magisk → Superuser** (the shield tab in the bottom bar).
+3. Find the entry **Shell** (`com.android.shell`) and turn its switch **on**.
+
+   If there is no Shell entry, repeat step 1 with the phone unlocked and the Magisk app open, then look again.
+
+4. Test root again:
+
+   ```bash
+   tools/platform-tools/adb shell su -c id          # expect uid=0(root) ... context=u:r:magisk:s0
+   ```
+
+Every later step (`backup`, the chroot, the builds) runs `su` through adb and fails with `Permission denied` until
+this switch is on. Unlocking or a factory reset clears the grant, so redo this step after either.
+
+Finally, back up the phone's own partitions (both slots plus the GPT of every LUN) and refresh the profile:
 
 ```bash
 scripts/android-tool.sh backup
@@ -120,7 +138,7 @@ Rollback at any time: `scripts/android-tool.sh restore init_boot`.
 
 ```bash
 scripts/ubuntu-chroot-setup.sh
-tools/platform-tools/adb shell su -c /data/local/ubuntu/start.sh   # a root shell inside Ubuntu 24.04 on the phone; exit to leave
+tools/platform-tools/adb shell -t su -c /data/local/ubuntu/start.sh   # root shell in Ubuntu 24.04; exit to leave. Without -t there is no prompt and it looks hung
 ```
 
 ---
@@ -161,7 +179,8 @@ A flashed boot_b image **must** have that footer; `fastboot boot` does not check
 
 ## Phase 3c — first light (RAM only, nothing is written)
 
-**(you type)** asks for your Mac password to give the USB network interface an address, reboots the phone to fastboot
+**(you type)** asks for your **Mac login password** (it is `sudo` on the Mac, not a Linux password; Ctrl-C at that
+prompt is fine, the IPv6 login below works without the address) to give the USB network interface an address, reboots the phone to fastboot
 and runs `fastboot boot` with the test chain image.
 
 ```bash
@@ -178,13 +197,15 @@ ssh -6 -i keys/omarchy-dodge_ed25519 root@fe80::REPLACE_ME%en13
 
 The serial console `screen /dev/cu.usbmodemomamobile3 115200` is silent in the test image until you start a shell on
 it over SSH: `nohup setsid sh -c 'while :; do /bin/sh -l </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done' &`.
-Type `reboot` there to return to Android. Nothing was written.
+Type `reboot -f` there (or over SSH) to return to Android; plain `reboot` does nothing in the test image because its
+PID 1 is a shell script. The SSH session hangs when the phone goes away: close it with Enter, `~`, `.`. Nothing was written.
 
 ---
 
 ## Phase 3d — build the Ubuntu root filesystem
 
-**(you type)** asks for the Linux user name and password (twice, no echo). Run it from Terminal.app, not from inside
+**(you type)** asks for the Linux user name, the device name (hostname, Enter keeps `oneplus13`) and the password
+(twice, no echo; `OMARCHY_USER`, `OMARCHY_HOSTNAME`, `OMARCHY_PASSWORD` skip the prompts). Run it from Terminal.app, not from inside
 another tool: without a terminal it stops with a message. It runs detached for about 20 min; `status` shows the log.
 
 ```bash
@@ -258,6 +279,14 @@ ssh -6 -i keys/omarchy-dodge_ed25519 YOUR_USER@fe80::REPLACE_ME%en13
    sudo mkdir -p /etc/systemd/logind.conf.d
    printf '[Login]\nHandlePowerKey=ignore\nHandlePowerKeyLongPress=ignore\n' | sudo tee /etc/systemd/logind.conf.d/10-powerkey.conf
    sudo systemctl restart systemd-logind
+   ```
+
+4. **Device name.** Images built after 2026-11-23 ask for it during the `rootfs` step. To change it on an installed
+   system (takes effect at once; log in again to see it in the prompt):
+
+   ```bash
+   sudo hostnamectl set-hostname NEW-NAME
+   sudo sed -i "s/^127\.0\.0\.1 .*/127.0.0.1 localhost NEW-NAME/" /etc/hosts
    ```
 
 ---

@@ -20,6 +20,11 @@ Read `CLAUDE.md` for the full state of the project and the safety rules; `docs/`
 Nothing proprietary is in this repository: firmware, dumps, build outputs, the Platform-Tools and the SSH private key
 are gitignored and recreated by the scripts.
 
+
+## Claude
+
+Prompt Claude " I want to root my OnePlus13 Follow the instructions in ONEPLUS13-step-by-step.md"
+
 ## Quick start
 
 ```bash
