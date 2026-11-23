@@ -291,6 +291,41 @@ ssh -6 -i keys/omarchy-dodge_ed25519 YOUR_USER@fe80::REPLACE_ME%en13
 
 ---
 
+## Phase 3g — optional: a graphical desktop
+
+The install above is a text console. A desktop can be added afterwards from the Mac, over SSH, with the phone on Wi-Fi
+(about 5-10 min, 1.5 GB). `USER@HOST` is your Linux user and the phone's Wi-Fi address (`ip -brief addr show wlp1s0`
+on the phone), or the quoted USB address `'USER@fe80::…%en13'`:
+
+```bash
+scripts/omarchy-desktop.sh gnome USER@HOST      # regular Ubuntu desktop (GNOME, GDM login screen)
+ssh -i keys/omarchy-dodge_ed25519 USER@HOST sudo reboot
+```
+
+The phone then boots to a login screen; tap your user and type the password on the on-screen keyboard.
+
+| Mode | What it is | State on this phone (2026-11-23) |
+|---|---|---|
+| `gnome` | Ubuntu's GNOME session with GDM | Login screen and session start; software rendered |
+| `lomiri` | Lomiri, the Ubuntu Touch shell, from Ubuntu 24.04's archive | Installs, then crashes at login (qtmir); experimental |
+| `phosh` | Phosh, the phone shell | Not tried yet |
+| `none` | Back to the text console (packages stay) | Not tried yet |
+| `status` | Shows what is configured | Works |
+
+What the script sets up besides the packages (`scripts/phone-desktop.sh`, which is what runs on the phone and is also
+left there as `sudo phone-desktop <mode>`):
+
+- **Touch.** The Synaptics panel driver is a module nothing loads by itself; it is added to `/etc/modules-load.d/`.
+- **Software rendering.** Ubuntu 24.04's Mesa has no driver for the Adreno 830, and without
+  `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` the login screen crashes in a loop. Everything is drawn by the CPU.
+- **Phone defaults.** Scale 3 on the 1440x3168 panel, on-screen keyboard on, no automatic suspend, power key ignored.
+
+Ubuntu Touch itself cannot be installed: its ports sit on each phone's Android kernel and there is none for the
+OnePlus 13 (the newest OnePlus on its device list is the Nord 2). SSH and the USB serial console keep working whatever
+the desktop does, so a broken desktop is undone with `scripts/omarchy-desktop.sh none USER@HOST` and a reboot.
+
+---
+
 ## Going back
 
 - **Android again, keeping Linux installed**: `scripts/omarchy-install-slot-b.sh back-to-android` (Android needs a factory reset because userdata is now ext4).
