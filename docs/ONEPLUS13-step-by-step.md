@@ -204,6 +204,18 @@ PID 1 is a shell script. The SSH session hangs when the phone goes away: close i
 
 ## Phase 3d — build the Ubuntu root filesystem
 
+The `rootfs` step asks which Ubuntu to build (`OMARCHY_FLAVOR=server|minimal` skips the question):
+
+| Choice | What you get |
+|---|---|
+| `server` (default) | **Ubuntu Server 24.04**: Ubuntu Base plus the `ubuntu-minimal`, `ubuntu-standard` and `ubuntu-server` package sets, the same seeds a server image is built from |
+| `minimal` | Only what the phone needs to boot, join a network and be reached over SSH; about 350 MB smaller |
+
+Two things a stock server install has are left out of `server` on purpose: `snapd` and `cloud-init` (cloud-init would
+rewrite the network and SSH setup at first boot). `multipathd` is masked so it leaves the phone's UFS LUNs alone, and
+NetworkManager stays in charge of Wi-Fi and USB networking. `verify-rootfs` prints the chosen flavor and an
+`ubuntu-server:` line, which must say `install ok installed` for `server`.
+
 **(you type)** asks for the Linux user name, the device name (hostname, Enter keeps `oneplus13`) and the password
 (twice, no echo; `OMARCHY_USER`, `OMARCHY_HOSTNAME`, `OMARCHY_PASSWORD` skip the prompts). Run it from Terminal.app, not from inside
 another tool: without a terminal it stops with a message. It runs detached for about 20 min; `status` shows the log.

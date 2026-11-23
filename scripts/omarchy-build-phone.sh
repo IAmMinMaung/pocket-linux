@@ -9,6 +9,7 @@
 #   scripts/omarchy-build-phone.sh vendor-fw  # stage this phone's Wi-Fi/BT/GPU firmware from Android (+ tmel from modem_a) into /root/dl/vendor-fw
 #   scripts/omarchy-build-phone.sh rootfs     # Ubuntu 24.04 root for userdata -> /root/out/rootfs-ubuntu-noble-dodge.img (ext4, label omamobile-root)
 #                                             #   asks for the Linux user name and password (or OMARCHY_USER / OMARCHY_PASSWORD env for unattended runs)
+#                                             #   and the flavor: server (Ubuntu Server package set, default) or minimal (OMARCHY_FLAVOR)
 #   scripts/omarchy-build-phone.sh verify-rootfs | mkimage   # check the built root; make the minimal ext4 image from it
 #   scripts/omarchy-build-phone.sh pull       # copy build outputs to firmware/images/omarchy-dodge/ on the Mac
 #   scripts/omarchy-build-phone.sh status     # tail the logs
@@ -85,6 +86,21 @@ KEY="$HERE/keys/omarchy-dodge_ed25519"
 if [ ! -f "$KEY" ]; then mkdir -p "$HERE/keys"; ssh-keygen -q -t ed25519 -N '' -C omarchy-dodge -f "$KEY"; echo "generated $KEY (gitignored; it is the only way into the built images)"; fi
 
 TOOLCHAIN_PKGS="clang lld llvm make bc bison flex libssl-dev libelf-dev libdw-dev build-essential pkg-config python3 python3-pip device-tree-compiler libfdt-dev lz4 zstd xz-utils cpio rsync kmod dwarves file git curl ca-certificates e2fsprogs gdisk util-linux"
+# Which Ubuntu the root filesystem becomes. OMARCHY_FLAVOR skips the question; without a terminal the default is used.
+#   server   Ubuntu Server: ubuntu-minimal + ubuntu-standard + ubuntu-server (no snapd, no cloud-init)
+#   minimal  only what the phone needs to boot, network and be reached over SSH (about 350 MB smaller)
+ask_flavor() {
+    local a
+    OFLAVOR=${OMARCHY_FLAVOR:-}
+    if [ -z "$OFLAVOR" ] && { : </dev/tty; } 2>/dev/null; then
+        printf 'Ubuntu flavor for the phone:\n  1) server   Ubuntu Server package set (default)\n  2) minimal  bare system: boot, network, SSH\nChoice [1]: '
+        read -r a </dev/tty || true
+        case "$a" in 2|minimal) OFLAVOR=minimal ;; ""|1|server) OFLAVOR=server ;; *) echo "unknown choice '$a' (1 or 2)"; exit 1 ;; esac
+    fi
+    OFLAVOR=${OFLAVOR:-server}
+    case "$OFLAVOR" in server|minimal) ;; *) echo "OMARCHY_FLAVOR must be server or minimal, not '$OFLAVOR'"; exit 1 ;; esac
+}
+
 install_toolchain() { in_ubuntu_run toolchain "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; apt-get install -y -qq --no-install-recommends $TOOLCHAIN_PKGS >/dev/null; clang --version | head -1; ld.lld --version | head -1; make --version | head -1; echo TOOLCHAIN-DONE"; }
 
 case "${1:-}" in
@@ -126,6 +142,8 @@ verify-rootfs)
     in_ubuntu_run verify-rootfs 'R=/root/rootfs; U=$(cat /root/out/linux-user.name 2>/dev/null || echo "?")
 echo "apt errors in log: $(grep -c -E "^E:|Error [0-9]" /root/build-rootfs.log)"
 for f in usr/lib/systemd/systemd usr/bin/sudo usr/sbin/sshd usr/sbin/NetworkManager usr/sbin/sgdisk usr/sbin/wpa_supplicant usr/bin/nmcli; do [ -e $R/$f ] && echo "ok   /$f" || echo "MISSING /$f"; done
+echo "flavor chosen: $(cat /root/out/linux-flavor 2>/dev/null || echo server)  (minimal: ubuntu-server below is expected to be MISSING)"
+echo "ubuntu-server: $(chroot $R dpkg-query -W -f "\${Status} \${Version}" ubuntu-server 2>/dev/null || echo MISSING); snapd: $(chroot $R dpkg-query -W -f "\${Status}" snapd 2>/dev/null || echo absent); cloud-init: $(chroot $R dpkg-query -W -f "\${Status}" cloud-init 2>/dev/null || echo absent)"
 echo "user: $U"; grep -E "^($U|root):" $R/etc/passwd; echo "sudoers: $(cat $R/etc/sudoers.d/$U 2>/dev/null)"; echo "password set: $(grep "^$U:" $R/etc/shadow | cut -d: -f2 | cut -c1-3 | sed s/^\\$6\\$/yes-sha512/)"
 echo "modules: $(ls $R/lib/modules 2>/dev/null) ($(find $R/lib/modules -name "*.ko*" 2>/dev/null | wc -l) files); ath12k: $(ls $R/lib/modules/*/kernel/drivers/net/wireless/ath/ath12k/ 2>/dev/null | tr "\n" " ")"
 echo "firmware: $(du -sh $R/lib/firmware 2>/dev/null | cut -f1); ath12k dir: $(ls $R/lib/firmware/ath12k/WCN7850/hw2.0 2>/dev/null | tr "\n" " "); WCN7860 link: $(readlink $R/lib/firmware/ath12k/WCN7860/hw2.0 2>/dev/null); qcom gen8: $(ls $R/lib/firmware/qcom/gen8* 2>/dev/null | wc -l)"
@@ -208,13 +226,17 @@ echo "peach: $(ls $V/peach | wc -l) files ($(ls $V/peach | grep -E "amss20|bdwla
 echo "bt: $(ls $V/bt | wc -l) files; gpu: $(ls $V/gpu | wc -l) files; tmel: $(ls $V/modem-image 2>/dev/null | tr "\n" " ")"
 du -sh /root/dl/vendor-fw; echo VENDOR-FW-DONE' ;;
 rootfs)
-    # Native Ubuntu 24.04 root for userdata: Ubuntu Base + systemd + networking + SSH + this build's kernel modules,
+    # Native Ubuntu 24.04 Server root for userdata: Ubuntu Base + systemd + networking + SSH + the ubuntu-server
+    # package set (ubuntu-minimal, ubuntu-standard, ubuntu-server; no snapd, no cloud-init) + this build's kernel modules,
     # then an ext4 image labelled omamobile-root (the Omarchy init grows it to the whole partition on first boot).
     ask_linux_user
+    ask_flavor
     tmp=$(mktemp); printf '%s %s\n' "$OUSER" "$OHASH" > "$tmp"
     "$ADB" push "$tmp" /data/local/tmp/.linux-user </dev/null >/dev/null; rm -f "$tmp"
     su_sh "mkdir -p $R/root/out && cp /data/local/tmp/.linux-user $R/root/out/linux-user && chmod 600 $R/root/out/linux-user && rm /data/local/tmp/.linux-user"
     echo "user: $OUSER (hash in /root/out/linux-user inside the chroot, root-only)"
+    su_sh "printf '%s\n' $OFLAVOR > $R/root/out/linux-flavor"
+    echo "flavor: $OFLAVOR"
     in_ubuntu_bg rootfs 'set -e
 R=/root/rootfs; IMG=/root/out/rootfs-ubuntu-noble-dodge.img; MODS=/root/out/stage2/modules-staging/lib/modules
 read -r OUSER OHASH < /root/out/linux-user; printf "%s\n" "$OUSER" > /root/out/linux-user.name
@@ -225,6 +247,7 @@ rm -f $R/etc/resolv.conf; printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > $R
 printf "oneplus13\n" > $R/etc/hostname; printf "127.0.0.1 localhost oneplus13\n::1 localhost\n" > $R/etc/hosts
 mount -t proc proc $R/proc; mount --bind /dev $R/dev; mount --bind /dev/pts $R/dev/pts; mount -t sysfs sys $R/sys
 install -m 600 /root/out/linux-user $R/root/.linux-user
+cp /root/out/linux-flavor $R/root/.linux-flavor 2>/dev/null || echo server > $R/root/.linux-flavor
 cat > $R/usr/sbin/policy-rc.d <<P
 #!/bin/sh
 exit 101
@@ -236,6 +259,15 @@ apt-get install -y -qq --no-install-recommends systemd systemd-sysv systemd-reso
   openssh-server sudo nano vim-tiny less curl wget ca-certificates locales bash-completion util-linux e2fsprogs gdisk fdisk \
   network-manager wpasupplicant wireless-regdb iw rfkill bluez pciutils usbutils i2c-tools zstd lz4 python3 git htop tmux \
   linux-firmware console-setup kbd rsyslog >/dev/null
+# Ubuntu Server: the three metapackages a server image is seeded from. Without Recommends this leaves out snapd and
+# cloud-init (both wrong on a phone: no seed, and cloud-init rewrites network and SSH settings at first boot).
+# multipathd probes every SCSI LUN and this phone has six UFS LUNs it has no business claiming; lxd-installer
+# needs snapd. NetworkManager stays the network stack (netplan is installed by ubuntu-minimal but has no config).
+if [ \"\$(cat /root/.linux-flavor 2>/dev/null)\" != minimal ]; then
+  apt-get install -y -qq --no-install-recommends ubuntu-minimal ubuntu-standard ubuntu-server >/dev/null
+  systemctl mask multipathd.service multipathd.socket lxd-installer.socket >/dev/null 2>&1 || true
+fi
+rm -f /root/.linux-flavor
 locale-gen C.UTF-8 >/dev/null 2>&1 || true
 ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
 read -r u h < /root/.linux-user; rm -f /root/.linux-user
