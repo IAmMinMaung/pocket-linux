@@ -21,9 +21,9 @@ Nothing proprietary is in this repository: firmware, dumps, build outputs, the P
 are gitignored and recreated by the scripts.
 
 
-## Claude
+## Claude Startup
 
-Prompt Claude " I want to root my OnePlus13 Follow the instructions in ONEPLUS13-step-by-step.md"
+Claude "I want to root my OnePlus13 Follow the instructions in ONEPLUS13-step-by-step.md, then install Linux."
 
 ## Quick start
 

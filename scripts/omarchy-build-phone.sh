@@ -13,7 +13,7 @@
 #                                             #   then GUI yes or no (OMARCHY_DESKTOP): gnome or none (text console), for any system,
 #                                             #   then the device name, Linux user name and password (OMARCHY_HOSTNAME / OMARCHY_USER /
 #                                             #   OMARCHY_PASSWORD env for unattended runs; the device name has no default;
-#                                             #   with gnome, and always for arch, SSH takes the key only)
+#                                             #   SSH takes that password or the project key; root is key only)
 #   scripts/omarchy-build-phone.sh verify-rootfs | mkimage   # check the built root; make the minimal ext4 image from it
 #   scripts/omarchy-build-phone.sh pull-rootfs               # copy that image to firmware/images/omarchy-dodge-rootfs-<ts>/ on the Mac,
 #                                             #   compare its sha256 with the phone's, and write the .sparse.img that gets flashed
@@ -98,6 +98,8 @@ MSG
 
 KEY="$HERE/keys/omarchy-dodge_ed25519"
 if [ ! -f "$KEY" ]; then mkdir -p "$HERE/keys"; ssh-keygen -q -t ed25519 -N '' -C omarchy-dodge -f "$KEY"; echo "generated $KEY (gitignored; it is the only way into the built images)"; fi
+# The public half can be lost on its own (it is derived, so write it again from the private key).
+[ -f "$KEY.pub" ] || { ssh-keygen -y -f "$KEY" > "$KEY.pub"; echo "rewrote $KEY.pub from the private key"; }
 
 TOOLCHAIN_PKGS="clang lld llvm make bc bison flex libssl-dev libelf-dev libdw-dev build-essential pkg-config python3 python3-pip device-tree-compiler libfdt-dev lz4 zstd xz-utils cpio rsync kmod dwarves file git curl ca-certificates e2fsprogs gdisk util-linux"
 # Graphical desktop on top of the chosen system, asked right after the system (a yes/no question). OMARCHY_DESKTOP skips the question; without a terminal
@@ -194,7 +196,7 @@ echo "fstab: $(cat $R/etc/fstab)"; echo "nm usb0: $(grep address1 $R/etc/Network
 echo "enabled: $(ls $R/etc/systemd/system/multi-user.target.wants/ $R/etc/systemd/system/getty.target.wants/ 2>/dev/null | grep -v : | tr "\n" " ")"
 if [ "$DESK" = gnome ]; then
   for f in usr/bin/gnome-shell usr/bin/gnome-session; do [ -e $R/$f ] && echo "ok   /$f" || echo "MISSING /$f"; done
-  ls $R/usr/bin/gdm $R/usr/sbin/gdm3 >/dev/null 2>&1 && echo "ok   gdm" || echo "MISSING gdm"
+  { [ -x $R/usr/bin/gdm ] || [ -x $R/usr/sbin/gdm3 ]; } && echo "ok   gdm" || echo "MISSING gdm"
   echo "desktop: gnome; default target $(basename "$(readlink $R/etc/systemd/system/default.target)"); login screen $([ -L $R/etc/systemd/system/display-manager.service ] && echo enabled || echo NOT-ENABLED); touch modules: $(grep -vc "^#" $R/etc/modules-load.d/oneplus13-touch.conf 2>/dev/null); software GL: $([ -f $R/etc/environment.d/50-oneplus13-software-gl.conf ] && echo yes || echo no)"
 else
   echo "desktop: none (text console); default target $(basename "$(readlink $R/etc/systemd/system/default.target 2>/dev/null || echo multi-user.target)")"
@@ -413,11 +415,10 @@ fi
 # SSH keys for root and the user (project key); root login by key only
 for h in $R/root $R/home/$OUSER; do mkdir -p $h/.ssh; cp /root/dl/authorized_keys $h/.ssh/authorized_keys; chmod 700 $h/.ssh; chmod 600 $h/.ssh/authorized_keys; done
 chroot $R chown -R $OUSER:$OUSER /home/$OUSER/.ssh
-# with a desktop the password is typed on the on-screen keyboard and tends to be short, so SSH takes the key only;
-# the same for arch, as before
+# the user logs in over SSH with the password or the project key, on every system and with or without a desktop
+# (requested 2026-11-25: plain "ssh user@ip" must work without the key file); root stays key only
 mkdir -p $R/etc/ssh/sshd_config.d
-if [ "$FL" = arch ] || [ "$DESK" = gnome ]; then PWAUTH=no; else PWAUTH=yes; fi
-printf "PermitRootLogin prohibit-password\nPasswordAuthentication %s\n" $PWAUTH > $R/etc/ssh/sshd_config.d/omamobile.conf
+printf "PermitRootLogin prohibit-password\nPasswordAuthentication yes\n" > $R/etc/ssh/sshd_config.d/omamobile.conf
 # USB gadget network (the initramfs creates the gadget; the kernel keeps it across switch_root)
 mkdir -p $R/etc/NetworkManager/system-connections
 cat > $R/etc/NetworkManager/system-connections/usb0.nmconnection <<N

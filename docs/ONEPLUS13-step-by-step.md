@@ -229,12 +229,13 @@ About `arch` (added 2026-11-24):
   only with a valid signature from the Arch Linux ARM build key. `scripts/arch-rootfs.sh` then removes the generic
   kernel and its firmware, upgrades, and sets up the system. Kernel, boot image and install steps are the same as
   for Ubuntu.
-- The default `alarm` account of Arch Linux ARM is removed and root is locked. SSH accepts only the project key.
+- The default `alarm` account of Arch Linux ARM is removed and root is locked.
 
 About the `gnome` desktop (on Ubuntu it is added by `scripts/ubuntu-gnome-rootfs.sh`, on Arch by `scripts/arch-rootfs.sh`):
 
-- The password also unlocks the screen, typed on the on-screen keyboard, so a short one or a PIN is practical. For
-  that reason SSH accepts only the project key when a desktop is chosen (no password login).
+- The password also unlocks the screen, typed on the on-screen keyboard. The same password logs you in over SSH
+  (`ssh YOUR_USER@<address>`, no key file needed), on USB and on Wi-Fi, so do not pick a short PIN: anyone on the
+  same network can try it, and the user has `sudo` without a password.
 - Graphics are drawn by the CPU (software rendering), so animations are slow. The Adreno 830 does not start on this
   kernel: its `gen80000_zap.mbn` firmware is missing. To try the GPU once that is solved, delete
   `/etc/environment.d/50-oneplus13-software-gl.conf` and the two matching lines in `/etc/environment` on the phone,
@@ -296,8 +297,12 @@ the same for every flavor):
 ```bash
 screen /dev/cu.usbmodemomamobile3 115200          # serial login; Ctrl-A K to leave
 ndp -an | grep en13 | grep -v permanent          # phone's USB link-local address (changes every boot)
-ssh -6 -i keys/omarchy-dodge_ed25519 YOUR_USER@fe80::REPLACE_ME%en13
+ssh -6 YOUR_USER@fe80::REPLACE_ME%en13            # asks for your password; add -i keys/omarchy-dodge_ed25519 to use the key instead
 ```
+
+Images built before 2026-11-25 with a desktop, and Arch images, accept only the key. To allow the password on such
+a system: `sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/omamobile.conf`
+and restart the service (`ssh` on Ubuntu, `sshd` on Arch).
 
 ---
 
@@ -321,7 +326,7 @@ ssh -6 -i keys/omarchy-dodge_ed25519 YOUR_USER@fe80::REPLACE_ME%en13
    ip -brief addr show wlp1s0 && ping -c 3 1.1.1.1
    ```
 
-   Then from the Mac: `ssh -i keys/omarchy-dodge_ed25519 YOUR_USER@<that address>`.
+   Then from the Mac: `ssh YOUR_USER@<that address>` (your password; `-i keys/omarchy-dodge_ed25519` uses the key).
 
 3. **Power button.** Images built after 2026-11-20 already ignore it. On an older image a short press powers the phone
    off (and it reboots at once on USB power):

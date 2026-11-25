@@ -1,5 +1,6 @@
 # secrets: the SSH key baked into the built Linux images (the .pub is fine to commit)
 keys/omarchy-dodge_ed25519
+keys/omarchy-dodge_ed25519.pub
 # firmware: proprietary OEM images, device dumps, build outputs (GBs) -- never committed
 firmware/images/
 firmware/patched/
@@ -18,3 +19,6 @@ profiles/*
 logs/*
 !logs/.gitkeep
 .DS_Store
+
+# Personal Claude Code settings
+.claude/settings.local.json
