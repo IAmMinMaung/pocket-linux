@@ -419,6 +419,16 @@ chroot $R chown -R $OUSER:$OUSER /home/$OUSER/.ssh
 # (requested 2026-11-25: plain "ssh user@ip" must work without the key file); root stays key only
 mkdir -p $R/etc/ssh/sshd_config.d
 printf "PermitRootLogin prohibit-password\nPasswordAuthentication yes\n" > $R/etc/ssh/sshd_config.d/omamobile.conf
+# The phone answers to <device name>.local on Wi-Fi and USB (mDNS by systemd-resolved, switched on per connection by
+# NetworkManager), whatever address the router gives it.
+mkdir -p $R/etc/systemd/resolved.conf.d $R/etc/NetworkManager/conf.d
+printf "[Resolve]\nMulticastDNS=yes\n" > $R/etc/systemd/resolved.conf.d/10-mdns.conf
+printf "[connection]\nconnection.mdns=2\n" > $R/etc/NetworkManager/conf.d/10-mdns.conf
+# One Wi-Fi hardware address per installation. ath12k finds no address in its board data and makes one up at every
+# boot (00:03:7f:12:xx:xx), so a router sees a new device each time: a new IP at every boot and no way to reserve one.
+# "stable" derives the address from this installation (NetworkManager secret key, created at first boot) and the id
+# below: the same at every boot and on every network, different from phone to phone.
+printf "[connection]\nwifi.cloned-mac-address=stable\nconnection.stable-id=oneplus13-wifi\n" > $R/etc/NetworkManager/conf.d/20-stable-wifi-mac.conf
 # USB gadget network (the initramfs creates the gadget; the kernel keeps it across switch_root)
 mkdir -p $R/etc/NetworkManager/system-connections
 cat > $R/etc/NetworkManager/system-connections/usb0.nmconnection <<N

@@ -326,7 +326,20 @@ and restart the service (`ssh` on Ubuntu, `sshd` on Arch).
    ip -brief addr show wlp1s0 && ping -c 3 1.1.1.1
    ```
 
-   Then from the Mac: `ssh YOUR_USER@<that address>` (your password; `-i keys/omarchy-dodge_ed25519` uses the key).
+   Then from the Mac: `ssh YOUR_USER@DEVICE-NAME.local` (your password; `-i keys/omarchy-dodge_ed25519` uses the key).
+   The name always finds the phone, on Wi-Fi and over USB. Images built since 2026-11-25 also keep one Wi-Fi
+   hardware address (MAC) for the life of the installation, so the router gives the same number at every boot and
+   you can reserve it there (UniFi: the client's settings, "Fixed IP Address"); `ip link show wlp1s0` prints the
+   MAC. Older images make up a new MAC at every boot (the Wi-Fi driver finds none in its board data), which the
+   router sees as a new device with a new address each time, and Ubuntu ones do not answer to the name. To get
+   both on an older image:
+
+   ```bash
+   printf '[Resolve]\nMulticastDNS=yes\n' | sudo tee /etc/systemd/resolved.conf.d/10-mdns.conf
+   printf '[connection]\nconnection.mdns=2\n' | sudo tee /etc/NetworkManager/conf.d/10-mdns.conf
+   printf '[connection]\nwifi.cloned-mac-address=stable\nconnection.stable-id=oneplus13-wifi\n' | sudo tee /etc/NetworkManager/conf.d/20-stable-wifi-mac.conf
+   sudo systemctl restart systemd-resolved && sudo nmcli general reload conf && sudo nmcli con up "YOUR-SSID"
+   ```
 
 3. **Power button.** Images built after 2026-11-20 already ignore it. On an older image a short press powers the phone
    off (and it reboots at once on USB power):

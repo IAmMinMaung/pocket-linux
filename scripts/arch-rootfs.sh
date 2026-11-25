@@ -124,6 +124,12 @@ if [ "$DESK" = gnome ]; then
 say "GNOME on the panel"
 # GDM is the login screen; it picks its own virtual terminal, so no terminal switch is needed (Phosh needed one).
 # The display scale is left to GNOME (Settings > Displays > Scale changes it).
+# The phone's own UFS partitions (Android firmware, modem, both boot slots) are not user drives: keep them out of
+# the dock and Files, where one tap would mount them. USB drives (ID_BUS=usb) still appear.
+mkdir -p /etc/udev/rules.d
+cat > /etc/udev/rules.d/62-oneplus13-hide-internal.rules <<'U'
+SUBSYSTEM=="block", KERNEL=="sd*", ENV{ID_BUS}=="scsi", ENV{UDISKS_IGNORE}="1"
+U
 sc enable gdm.service
 sc set-default graphical.target
 # Touch: the Synaptics panel driver is a module that nothing loads by itself.

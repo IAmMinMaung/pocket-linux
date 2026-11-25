@@ -66,6 +66,12 @@ sc mask sleep.target suspend.target hibernate.target hybrid-sleep.target suspend
 mkdir -p /etc/gdm3
 if [ -f /etc/gdm3/custom.conf ]; then sed -i 's/^#\?WaylandEnable=.*/WaylandEnable=true/' /etc/gdm3/custom.conf; fi
 ln -sf /dev/null /etc/udev/rules.d/61-gdm.rules
+# The phone's own UFS partitions (Android firmware, modem, both boot slots) are not user drives: keep them out of
+# the dock and Files, where one tap would mount them. USB drives (ID_BUS=usb) still appear.
+mkdir -p /etc/udev/rules.d
+cat > /etc/udev/rules.d/62-oneplus13-hide-internal.rules <<'U'
+SUBSYSTEM=="block", KERNEL=="sd*", ENV{ID_BUS}=="scsi", ENV{UDISKS_IGNORE}="1"
+U
 sc enable gdm3.service
 [ -L /etc/systemd/system/display-manager.service ] || ln -sf /usr/lib/systemd/system/gdm3.service /etc/systemd/system/display-manager.service
 mkdir -p /etc/X11; printf '/usr/sbin/gdm3\n' > /etc/X11/default-display-manager
