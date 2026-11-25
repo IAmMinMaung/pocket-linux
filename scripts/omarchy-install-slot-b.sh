@@ -46,7 +46,8 @@ MSG
 # (fastboot 37.0.3 on macOS fails with "Failed reading from <part>" on raw images >= 4 GiB, before sending anything.)
 fb_write() { # $1 partition, $2 image
     local out rc
-    out=$($FB flash "$1" "$2" </dev/null 2>&1); rc=$?
+    # "&& rc=0 || rc=$?": under set -e a bare failing assignment ends the script before the output is printed
+    out=$($FB flash "$1" "$2" </dev/null 2>&1) && rc=0 || rc=$?
     printf '%s\n' "$out" | tee -a "$LOG"
     [ $rc -eq 0 ] && printf '%s\n' "$out" | grep -q "Writing '$1'.*OKAY" || die "fastboot flash $1 FAILED (exit $rc): nothing to trust on the device for this partition; see above"
 }

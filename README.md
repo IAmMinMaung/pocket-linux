@@ -37,7 +37,8 @@ Phase 1, unlock: Developer options > OEM unlocking, then `scripts/android-tool.s
 Phase 2, root: `scripts/android-tool.sh extract-boot <full-ota.zip>` (or `backup` on an already-rooted phone), then
 `scripts/android-tool.sh root`; rollback with `restore init_boot`. Procedure: `docs/rooting.md`.
 Phase 3, Linux: `scripts/ubuntu-chroot-setup.sh` (Ubuntu chroot on the phone, used as the build box),
-`scripts/omarchy-build-phone.sh sources|stage2|initramfs|chain|rootfs|pull` (kernel + images, built on the phone),
+`scripts/omarchy-build-phone.sh sources|stage2|initramfs|chain|rootfs|pull-rootfs|pull` (kernel + images, built on the phone;
+the root filesystem is Ubuntu Server, bare Ubuntu or Arch Linux ARM, each with an optional GNOME desktop),
 `kernel/stage1/fetch-sources.sh` + `kernel/stage1/build.sh` (stage-1 chainloader in Docker),
 `kernel/stage1/add-avb-footer.sh` (a flashed boot image needs an AVB footer), `scripts/omarchy-first-light.sh`
 (RAM-only test), `scripts/omarchy-install-slot-b.sh userdata|boot_b|activate` (the install), `revert-stock` + `lock`

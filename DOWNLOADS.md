@@ -38,6 +38,12 @@ scripts/fetch-inputs.sh ota      # stock OTA only (same as scripts/download-stoc
   https://github.com/derekross/omarchy-mobile , mkbootimg: https://android.googlesource.com/platform/system/tools/mkbootimg
 - Alpine minirootfs 3.24.2 aarch64 (stage-2 initramfs base, fetched on the phone by `omarchy-build-phone.sh sources`):
   https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz
+- Arch Linux ARM aarch64 root tarball (only for the `arch` rootfs flavor, fetched on the phone by
+  `omarchy-build-phone.sh rootfs`, 830 MB): http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz with its
+  `.md5` and `.sig`. It is a moving "latest" file, so no checksum is committed: the build accepts it only when the
+  detached signature is valid and made by the Arch Linux ARM build key, fingerprint
+  `68B3537F39A313B3E574D06777193F152BDBE6A6` (pinned in the script; the key is fetched from keyserver.ubuntu.com).
+  The address is plain http because the host's certificate is issued for another name.
 
 Never flash anything from an older build than the phone runs (anti-rollback), and never flash CDN images as "stock"
 on a phone you intend to relock: the lock-safe set is the phone's own dump (`scripts/android-tool.sh backup`).

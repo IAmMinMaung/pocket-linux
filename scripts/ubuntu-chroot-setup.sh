@@ -11,7 +11,7 @@ TAR=/data/local/tmp/ubuntu-base.tar.gz
 USER_NAME=${UBUNTU_USER:-}
 if [ -z "$USER_NAME" ]; then
     { : </dev/tty; } 2>/dev/null || { echo "No terminal to ask for the user name: run from a Terminal window or set UBUNTU_USER=<name>." >&2; exit 1; }
-    printf 'Ubuntu user name inside the chroot [%s]: ' "$(id -un)"; read -r USER_NAME </dev/tty || true; USER_NAME=${USER_NAME:-$(id -un)}
+    printf 'Linux user name inside the chroot [%s]: ' "$(id -un)"; read -r USER_NAME </dev/tty || true; USER_NAME=${USER_NAME:-$(id -un)}
 fi
 printf '%s' "$USER_NAME" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || { echo "invalid user name '$USER_NAME'"; exit 1; }
 STAGE=$(mktemp)

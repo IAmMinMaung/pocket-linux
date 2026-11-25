@@ -7,10 +7,16 @@
 #   scripts/omarchy-build-phone.sh initramfs  # stage-2 initramfs: Alpine minirootfs + dropbear/kexec/e2fsprogs + shared init
 #   scripts/omarchy-build-phone.sh chain      # stage-2 DTB (live memory map), stage-1 kernel, boot-chain.img (header v4)
 #   scripts/omarchy-build-phone.sh vendor-fw  # stage this phone's Wi-Fi/BT/GPU firmware from Android (+ tmel from modem_a) into /root/dl/vendor-fw
-#   scripts/omarchy-build-phone.sh rootfs     # Ubuntu 24.04 root for userdata -> /root/out/rootfs-ubuntu-noble-dodge.img (ext4, label omamobile-root)
-#                                             #   asks for the Linux user name and password (or OMARCHY_USER / OMARCHY_PASSWORD env for unattended runs)
-#                                             #   and the flavor: server (Ubuntu Server package set, default) or minimal (OMARCHY_FLAVOR)
+#   scripts/omarchy-build-phone.sh rootfs     # root file system for userdata -> /root/out/rootfs-<system>-dodge.img (ext4, label omamobile-root)
+#                                             #   asks for the flavor (OMARCHY_FLAVOR): server (Ubuntu Server 24.04, default), minimal (bare Ubuntu),
+#                                             #   or arch (Arch Linux ARM; scripts/arch-rootfs.sh),
+#                                             #   then GUI yes or no (OMARCHY_DESKTOP): gnome or none (text console), for any system,
+#                                             #   then the device name, Linux user name and password (OMARCHY_HOSTNAME / OMARCHY_USER /
+#                                             #   OMARCHY_PASSWORD env for unattended runs; the device name has no default;
+#                                             #   with gnome, and always for arch, SSH takes the key only)
 #   scripts/omarchy-build-phone.sh verify-rootfs | mkimage   # check the built root; make the minimal ext4 image from it
+#   scripts/omarchy-build-phone.sh pull-rootfs               # copy that image to firmware/images/omarchy-dodge-rootfs-<ts>/ on the Mac,
+#                                             #   compare its sha256 with the phone's, and write the .sparse.img that gets flashed
 #   scripts/omarchy-build-phone.sh pull       # copy build outputs to firmware/images/omarchy-dodge/ on the Mac
 #   scripts/omarchy-build-phone.sh status     # tail the logs
 #
@@ -53,14 +59,21 @@ ask_linux_user() {
     local def p1 p2 b
     def=$(id -un)
     OUSER=${OMARCHY_USER:-}
-    if { [ -z "$OUSER" ] || [ -z "${OMARCHY_PASSWORD:-}" ]; } && ! { : </dev/tty; } 2>/dev/null; then
+    OHOST=${OMARCHY_HOSTNAME:-}
+    if { [ -z "$OUSER" ] || [ -z "$OHOST" ] || [ -z "${OMARCHY_PASSWORD:-}" ]; } && ! { : </dev/tty; } 2>/dev/null; then
         cat >&2 <<MSG
-No terminal to ask for the Linux user name and password (e.g. started with the '!' prefix or from a script).
+No terminal to ask for the device name, Linux user name and password (e.g. started with the '!' prefix or from a script).
 Run this in a normal Terminal window:   scripts/omarchy-build-phone.sh rootfs
-or set OMARCHY_USER and OMARCHY_PASSWORD in the environment for an unattended run.
+or set OMARCHY_HOSTNAME, OMARCHY_USER and OMARCHY_PASSWORD in the environment for an unattended run.
 MSG
         exit 1
     fi
+    # The device name (hostname) has no default: it is how the phone shows up on the network (<name>.local).
+    while [ -z "$OHOST" ]; do
+        printf 'Device name for the phone (its hostname; letters, digits, hyphens): '; read -r OHOST </dev/tty || true
+    done
+    printf '%s' "$OHOST" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$' || { echo "invalid device name '$OHOST' (letters, digits and hyphens, at most 63, no hyphen at either end)"; exit 1; }
+    OHOST=$(printf '%s' "$OHOST" | tr 'A-Z' 'a-z')
     if [ -z "$OUSER" ]; then
         printf 'Linux user name for the phone [%s]: ' "$def"; read -r OUSER </dev/tty || true; OUSER=${OUSER:-$def}
     fi
@@ -68,9 +81,10 @@ MSG
     [ "$OUSER" != root ] || { echo "root stays locked; pick another name"; exit 1; }
     p1=${OMARCHY_PASSWORD:-}
     while [ -z "$p1" ]; do
-        printf 'Password for %s: ' "$OUSER"; read -rs p1 </dev/tty; echo
-        printf 'Repeat password: ';     read -rs p2 </dev/tty; echo
-        [ -n "$p1" ] && [ "$p1" = "$p2" ] || { echo "empty or mismatch, try again"; p1=; }
+        if [ "${OFLAVOR:-}" = arch ]; then printf 'Password or PIN for %s (it unlocks the screen): ' "$OUSER"; else printf 'Password for %s: ' "$OUSER"; fi
+        read -rs p1 </dev/tty; echo
+        printf 'Repeat: '; read -rs p2 </dev/tty; echo
+        [ -n "$p1" ] && [ "$p1" = "$p2" ] || { echo "empty or mismatch, try again"; p1=; continue; }
     done
     # crypt(3) SHA-512 hash: on the Mac when its openssl supports -6, otherwise inside the Ubuntu chroot
     OHASH=$(printf '%s' "$p1" | openssl passwd -6 -stdin 2>/dev/null) || OHASH=
@@ -86,19 +100,39 @@ KEY="$HERE/keys/omarchy-dodge_ed25519"
 if [ ! -f "$KEY" ]; then mkdir -p "$HERE/keys"; ssh-keygen -q -t ed25519 -N '' -C omarchy-dodge -f "$KEY"; echo "generated $KEY (gitignored; it is the only way into the built images)"; fi
 
 TOOLCHAIN_PKGS="clang lld llvm make bc bison flex libssl-dev libelf-dev libdw-dev build-essential pkg-config python3 python3-pip device-tree-compiler libfdt-dev lz4 zstd xz-utils cpio rsync kmod dwarves file git curl ca-certificates e2fsprogs gdisk util-linux"
-# Which Ubuntu the root filesystem becomes. OMARCHY_FLAVOR skips the question; without a terminal the default is used.
+# Graphical desktop on top of the chosen system, asked right after the system (a yes/no question). OMARCHY_DESKTOP skips the question; without a terminal
+# the answer is none. There is no default at the prompt: the choice changes the image by 1.5 to 3 GB.
+#   none   text console on the phone screen (login prompt), SSH
+#   gnome  GNOME with the GDM login screen, on-screen keyboard, software rendering
+ask_desktop() {
+    local a
+    ODESK=${OMARCHY_DESKTOP:-}
+    if [ -z "$ODESK" ] && { : </dev/tty; } 2>/dev/null; then
+        while [ -z "$ODESK" ]; do
+            printf 'Do you want a GUI (the GNOME desktop, with a login screen and on-screen keyboard)? yes or no: '
+            read -r a </dev/tty || true
+            case "$a" in y|Y|yes|Yes|YES|gnome) ODESK=gnome ;; n|N|no|No|NO|none) ODESK=none ;; *) echo "please answer yes or no" ;; esac
+        done
+    fi
+    ODESK=${ODESK:-none}
+    case "$ODESK" in none|gnome) ;; *) echo "OMARCHY_DESKTOP must be none or gnome"; exit 1 ;; esac
+}
+
+# Which system the root filesystem becomes. OMARCHY_FLAVOR skips the question; without a terminal the default is used.
 #   server   Ubuntu Server: ubuntu-minimal + ubuntu-standard + ubuntu-server (no snapd, no cloud-init)
 #   minimal  only what the phone needs to boot, network and be reached over SSH (about 350 MB smaller)
+#   arch     Arch Linux ARM (rolling release)
+# Every system can get the GNOME desktop on top: that is a separate yes/no question, asked next (ask_desktop).
 ask_flavor() {
     local a
     OFLAVOR=${OMARCHY_FLAVOR:-}
     if [ -z "$OFLAVOR" ] && { : </dev/tty; } 2>/dev/null; then
-        printf 'Ubuntu flavor for the phone:\n  1) server   Ubuntu Server package set (default)\n  2) minimal  bare system: boot, network, SSH\nChoice [1]: '
+        printf 'System for the phone:\n  1) server   Ubuntu Server 24.04 package set (default)\n  2) minimal  bare Ubuntu 24.04: boot, network, SSH\n  3) arch     Arch Linux ARM\nChoice [1]: '
         read -r a </dev/tty || true
-        case "$a" in 2|minimal) OFLAVOR=minimal ;; ""|1|server) OFLAVOR=server ;; *) echo "unknown choice '$a' (1 or 2)"; exit 1 ;; esac
+        case "$a" in 3|arch) OFLAVOR=arch ;; 2|minimal) OFLAVOR=minimal ;; ""|1|server) OFLAVOR=server ;; *) echo "unknown choice '$a' (1, 2 or 3)"; exit 1 ;; esac
     fi
     OFLAVOR=${OFLAVOR:-server}
-    case "$OFLAVOR" in server|minimal) ;; *) echo "OMARCHY_FLAVOR must be server or minimal, not '$OFLAVOR'"; exit 1 ;; esac
+    case "$OFLAVOR" in server|minimal|arch) ;; *) echo "OMARCHY_FLAVOR must be server, minimal or arch, not '$OFLAVOR'"; exit 1 ;; esac
 }
 
 install_toolchain() { in_ubuntu_run toolchain "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; apt-get install -y -qq --no-install-recommends $TOOLCHAIN_PKGS >/dev/null; clang --version | head -1; ld.lld --version | head -1; make --version | head -1; echo TOOLCHAIN-DONE"; }
@@ -139,26 +173,59 @@ SRC
 )
     in_ubuntu_run sources "$body" ;;
 verify-rootfs)
-    in_ubuntu_run verify-rootfs 'R=/root/rootfs; U=$(cat /root/out/linux-user.name 2>/dev/null || echo "?")
-echo "apt errors in log: $(grep -c -E "^E:|Error [0-9]" /root/build-rootfs.log)"
-for f in usr/lib/systemd/systemd usr/bin/sudo usr/sbin/sshd usr/sbin/NetworkManager usr/sbin/sgdisk usr/sbin/wpa_supplicant usr/bin/nmcli; do [ -e $R/$f ] && echo "ok   /$f" || echo "MISSING /$f"; done
-echo "flavor chosen: $(cat /root/out/linux-flavor 2>/dev/null || echo server)  (minimal: ubuntu-server below is expected to be MISSING)"
-echo "ubuntu-server: $(chroot $R dpkg-query -W -f "\${Status} \${Version}" ubuntu-server 2>/dev/null || echo MISSING); snapd: $(chroot $R dpkg-query -W -f "\${Status}" snapd 2>/dev/null || echo absent); cloud-init: $(chroot $R dpkg-query -W -f "\${Status}" cloud-init 2>/dev/null || echo absent)"
-echo "user: $U"; grep -E "^($U|root):" $R/etc/passwd; echo "sudoers: $(cat $R/etc/sudoers.d/$U 2>/dev/null)"; echo "password set: $(grep "^$U:" $R/etc/shadow | cut -d: -f2 | cut -c1-3 | sed s/^\\$6\\$/yes-sha512/)"
-echo "modules: $(ls $R/lib/modules 2>/dev/null) ($(find $R/lib/modules -name "*.ko*" 2>/dev/null | wc -l) files); ath12k: $(ls $R/lib/modules/*/kernel/drivers/net/wireless/ath/ath12k/ 2>/dev/null | tr "\n" " ")"
-echo "firmware: $(du -sh $R/lib/firmware 2>/dev/null | cut -f1); ath12k dir: $(ls $R/lib/firmware/ath12k/WCN7850/hw2.0 2>/dev/null | tr "\n" " "); WCN7860 link: $(readlink $R/lib/firmware/ath12k/WCN7860/hw2.0 2>/dev/null); qcom gen8: $(ls $R/lib/firmware/qcom/gen8* 2>/dev/null | wc -l)"
+    in_ubuntu_run verify-rootfs 'R=/root/rootfs; U=$(cat /root/out/linux-user.name 2>/dev/null || echo "?"); FL=$(cat /root/out/linux-flavor 2>/dev/null || echo server); DESK=$(cat /root/out/linux-desktop 2>/dev/null || echo none)
+echo "flavor: $FL   desktop: $DESK   image: $(cat /root/out/rootfs-image.name 2>/dev/null || echo rootfs-ubuntu-noble-dodge.img)"
+if [ "$FL" = arch ]; then
+  echo "errors in log: $(grep -c -E "^error|^!!" /root/build-rootfs.log)   finished: $(grep -c ARCH-ROOTFS-DONE /root/build-rootfs.log)"
+  for f in usr/lib/systemd/systemd usr/bin/sudo usr/bin/sshd usr/bin/NetworkManager usr/bin/sgdisk usr/bin/wpa_supplicant usr/bin/nmcli; do [ -e $R/$f ] && echo "ok   /$f" || echo "MISSING /$f"; done
+  echo "arch: $(chroot $R pacman -Q systemd openssh networkmanager 2>&1 | tr "\n" ";") packages: $(chroot $R pacman -Qq | wc -l); generic kernel: $(chroot $R pacman -Qq linux-aarch64 2>/dev/null || echo removed)"
+  echo "accounts: alarm $(grep -q "^alarm:" $R/etc/passwd && echo STILL-PRESENT || echo removed); root $(grep "^root:" $R/etc/shadow | cut -d: -f2 | cut -c1 | sed "s/^!$/locked/"); ssh passwords: $(grep -h PasswordAuthentication $R/etc/ssh/sshd_config.d/omamobile.conf)"
+else
+  echo "apt errors in log: $(grep -c -E "^E:|Error [0-9]" /root/build-rootfs.log)"
+  for f in usr/lib/systemd/systemd usr/bin/sudo usr/sbin/sshd usr/sbin/NetworkManager usr/sbin/sgdisk usr/sbin/wpa_supplicant usr/bin/nmcli; do [ -e $R/$f ] && echo "ok   /$f" || echo "MISSING /$f"; done
+  echo "(minimal: ubuntu-server below is expected to be MISSING)"
+  echo "ubuntu-server: $(chroot $R dpkg-query -W -f "\${Status} \${Version}" ubuntu-server 2>/dev/null || echo MISSING); snapd: $(chroot $R dpkg-query -W -f "\${Status}" snapd 2>/dev/null || echo absent); cloud-init: $(chroot $R dpkg-query -W -f "\${Status}" cloud-init 2>/dev/null || echo absent)"
+fi
+echo "user: $U   device name: $(cat $R/etc/hostname 2>/dev/null)"; grep -E "^($U|root):" $R/etc/passwd; echo "sudoers: $(cat $R/etc/sudoers.d/$U 2>/dev/null)"; echo "password set: $(grep "^$U:" $R/etc/shadow | cut -d: -f2 | cut -c1-3 | sed s/^\\$6\\$/yes-sha512/)"
+echo "modules: $(ls $R/lib/modules 2>/dev/null) ($(find $R/lib/modules/ -name "*.ko*" 2>/dev/null | wc -l) files); ath12k: $(ls $R/lib/modules/*/kernel/drivers/net/wireless/ath/ath12k/ 2>/dev/null | tr "\n" " ")"
+echo "firmware: $(du -sh $R/lib/firmware/ 2>/dev/null | cut -f1); ath12k dir: $(ls $R/lib/firmware/ath12k/WCN7850/hw2.0 2>/dev/null | tr "\n" " "); WCN7860 link: $(readlink $R/lib/firmware/ath12k/WCN7860/hw2.0 2>/dev/null); qcom gen8: $(ls $R/lib/firmware/qcom/gen8* 2>/dev/null | wc -l)"
 echo "ssh keys: root=$(wc -l < $R/root/.ssh/authorized_keys 2>/dev/null) $U=$(wc -l < $R/home/$U/.ssh/authorized_keys 2>/dev/null)"
 echo "fstab: $(cat $R/etc/fstab)"; echo "nm usb0: $(grep address1 $R/etc/NetworkManager/system-connections/usb0.nmconnection 2>/dev/null)"
 echo "enabled: $(ls $R/etc/systemd/system/multi-user.target.wants/ $R/etc/systemd/system/getty.target.wants/ 2>/dev/null | grep -v : | tr "\n" " ")"
+if [ "$DESK" = gnome ]; then
+  for f in usr/bin/gnome-shell usr/bin/gnome-session; do [ -e $R/$f ] && echo "ok   /$f" || echo "MISSING /$f"; done
+  ls $R/usr/bin/gdm $R/usr/sbin/gdm3 >/dev/null 2>&1 && echo "ok   gdm" || echo "MISSING gdm"
+  echo "desktop: gnome; default target $(basename "$(readlink $R/etc/systemd/system/default.target)"); login screen $([ -L $R/etc/systemd/system/display-manager.service ] && echo enabled || echo NOT-ENABLED); touch modules: $(grep -vc "^#" $R/etc/modules-load.d/oneplus13-touch.conf 2>/dev/null); software GL: $([ -f $R/etc/environment.d/50-oneplus13-software-gl.conf ] && echo yes || echo no)"
+else
+  echo "desktop: none (text console); default target $(basename "$(readlink $R/etc/systemd/system/default.target 2>/dev/null || echo multi-user.target)")"
+fi
 echo "size: $(du -sh $R | cut -f1)"' ;;
 mkimage)
-    in_ubuntu_run mkimage 'set -e; R=/root/rootfs; I=/root/out/rootfs-ubuntu-noble-dodge.img
+    in_ubuntu_run mkimage 'set -e; R=/root/rootfs; I=/root/out/$(cat /root/out/rootfs-image.name 2>/dev/null || echo rootfs-ubuntu-noble-dodge.img)
 need_kb=$(du -sk $R | cut -f1); size_mb=$(( need_kb/1024 * 125 / 100 + 256 ))
 rm -f $I; truncate -s ${size_mb}M $I
 mkfs.ext4 -q -F -L omamobile-root -O ^has_journal -d $R $I
 e2fsck -fn $I >/dev/null && echo fsck-ok
 dumpe2fs -h $I 2>/dev/null | grep -E "volume name|Block count|Block size"
 ls -la $I; sha256sum $I' ;;
+pull-rootfs)
+    command -v zstd >/dev/null || { echo "zstd is needed on the Mac for the transfer: brew install zstd"; exit 1; }
+    N=$(su_sh "cat $R/root/out/rootfs-image.name 2>/dev/null || echo rootfs-ubuntu-noble-dodge.img")
+    su_sh "test -s $R/root/out/$N && echo have" | grep -q have || { echo "no /root/out/$N in the chroot: run rootfs, then mkimage"; exit 1; }
+    D="$HERE/firmware/images/omarchy-dodge-rootfs-$(date +%Y%m%d-%H%M)"; mkdir -p "$D"
+    echo "compressing $N on the phone"
+    su_sh "$R/start.sh /bin/bash -c 'cd /root/out && zstd -T8 -3 -q -f $N && sha256sum $N > $N.sha256'"
+    su_sh "cat $R/root/out/$N.sha256" > "$D/$N.sha256"
+    su_sh "cp $R/root/out/$N.zst /data/local/tmp/rootfs.img.zst && chmod 644 /data/local/tmp/rootfs.img.zst"
+    "$ADB" pull /data/local/tmp/rootfs.img.zst "$D/$N.zst" </dev/null | tail -1
+    su_sh "rm -f /data/local/tmp/rootfs.img.zst $R/root/out/$N.zst"
+    zstd -d -q --rm "$D/$N.zst"
+    a=$(shasum -a 256 "$D/$N" | cut -c1-64); b=$(cut -c1-64 "$D/$N.sha256")
+    [ "$a" = "$b" ] || { echo "SHA256 MISMATCH: Mac $a, phone $b. Do not flash this copy."; exit 1; }
+    echo "sha256 matches the phone's: $a"
+    # fastboot on macOS fails on a large raw image; the sparse file is what gets flashed (scripts/img2simg.py checks it expands to the raw bytes)
+    python3 -I "$HERE/scripts/img2simg.py" pack "$D/$N" "$D/${N%.img}.sparse.img"
+    ls -la "$D"; echo "flash with: scripts/omarchy-install-slot-b.sh userdata ${D#$HERE/}/${N%.img}.sparse.img" ;;
 stage2)
     install_toolchain | tail -1
     in_ubuntu_bg stage2 'set -e; export ARCH=arm64 LLVM=1; cd /root/src/linux; mkdir -p /root/out/stage2
@@ -194,7 +261,7 @@ export STAGE2_DTB_IN=/root/out/stage2/arch/arm64/boot/dts/qcom/sm8750-oneplus-do
 export STAGE2_CMDLINE=\"\${CHAIN_CMDLINE:-rdinit=/init clk_ignore_unused pd_ignore_unused panic=10 console=tty0 omamobile.ufs-probe omamobile.initramfs}\"
 export SLOT_SUFFIX=_b
 mkdir -p \$ROOT/system/tools && ln -sfn /root/src/mkbootimg \$ROOT/system/tools/mkbootimg
-cd \$ROOT && bash tools/dodge-chain pack && cp \$CHAIN_OUT/images/boot-chain.img \$CHAIN_OUT/images/boot-chain-\${CHAIN_NAME:-test}.img; echo CHAIN-DONE" ;;
+cd \$ROOT && bash tools/dodge-chain pack && cp \$CHAIN_OUT/images/boot-chain.img \$CHAIN_OUT/images/boot-chain-\${CHAIN_NAME:-test}.img && echo CHAIN-DONE" ;;
 pull)
     D="$HERE/firmware/images/omarchy-dodge-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$D"
     for f in chain/images/boot-chain.img arch/arm64/boot/Image arch/arm64/boot/dts/qcom/sm8750-oneplus-dodge.dtb initramfs.cpio.lz4 .config chain/.config chain/chain/stage2.dtb include/config/kernel.release; do
@@ -226,27 +293,68 @@ echo "peach: $(ls $V/peach | wc -l) files ($(ls $V/peach | grep -E "amss20|bdwla
 echo "bt: $(ls $V/bt | wc -l) files; gpu: $(ls $V/gpu | wc -l) files; tmel: $(ls $V/modem-image 2>/dev/null | tr "\n" " ")"
 du -sh /root/dl/vendor-fw; echo VENDOR-FW-DONE' ;;
 rootfs)
-    # Native Ubuntu 24.04 Server root for userdata: Ubuntu Base + systemd + networking + SSH + the ubuntu-server
-    # package set (ubuntu-minimal, ubuntu-standard, ubuntu-server; no snapd, no cloud-init) + this build's kernel modules,
-    # then an ext4 image labelled omamobile-root (the Omarchy init grows it to the whole partition on first boot).
-    ask_linux_user
+    # Native root for userdata, by flavor:
+    #   server / minimal  Ubuntu Base 24.04 + systemd + networking + SSH (+ ubuntu-minimal, ubuntu-standard, ubuntu-server
+    #                     for server; no snapd, no cloud-init)
+    #   arch              Arch Linux ARM's root tarball (downloaded here, checked against its MD5 file and its detached
+    #                     signature from the pinned Arch Linux ARM build key), then scripts/arch-rootfs.sh in it
+    # then, for every flavor: this build's kernel modules, the phone's own firmware, the SSH key, USB networking,
+    # and an ext4 image labelled omamobile-root (the Omarchy init grows it to the whole partition on first boot).
     ask_flavor
-    tmp=$(mktemp); printf '%s %s\n' "$OUSER" "$OHASH" > "$tmp"
+    ask_desktop
+    ask_linux_user
+    # the script that runs inside the new root: the whole Arch setup, or GNOME on top of Ubuntu
+    INROOT=
+    if [ "$OFLAVOR" = arch ]; then INROOT=arch-rootfs.sh; elif [ "$ODESK" = gnome ]; then INROOT=ubuntu-gnome-rootfs.sh; fi
+    if [ -n "$INROOT" ]; then
+        "$ADB" push "$HERE/scripts/$INROOT" /data/local/tmp/.inroot </dev/null >/dev/null
+        su_sh "mkdir -p $R/root/dl && cp /data/local/tmp/.inroot $R/root/dl/$INROOT && chmod 755 $R/root/dl/$INROOT && rm /data/local/tmp/.inroot"
+    fi
+    tmp=$(mktemp); printf '%s %s %s\n' "$OUSER" "$OHASH" "$OHOST" > "$tmp"
     "$ADB" push "$tmp" /data/local/tmp/.linux-user </dev/null >/dev/null; rm -f "$tmp"
     su_sh "mkdir -p $R/root/out && cp /data/local/tmp/.linux-user $R/root/out/linux-user && chmod 600 $R/root/out/linux-user && rm /data/local/tmp/.linux-user"
-    echo "user: $OUSER (hash in /root/out/linux-user inside the chroot, root-only)"
-    su_sh "printf '%s\n' $OFLAVOR > $R/root/out/linux-flavor"
-    echo "flavor: $OFLAVOR"
+    echo "user: $OUSER   device name: $OHOST   (stored with the password hash in /root/out/linux-user inside the chroot, root-only)"
+    su_sh "printf '%s\n' $OFLAVOR > $R/root/out/linux-flavor; printf '%s\n' $ODESK > $R/root/out/linux-desktop"
+    echo "flavor: $OFLAVOR   desktop: $ODESK"
     in_ubuntu_bg rootfs 'set -e
-R=/root/rootfs; IMG=/root/out/rootfs-ubuntu-noble-dodge.img; MODS=/root/out/stage2/modules-staging/lib/modules
-read -r OUSER OHASH < /root/out/linux-user; printf "%s\n" "$OUSER" > /root/out/linux-user.name
+R=/root/rootfs; MODS=/root/out/stage2/modules-staging/lib/modules
+FL=$(cat /root/out/linux-flavor 2>/dev/null || echo server); DESK=$(cat /root/out/linux-desktop 2>/dev/null || echo none)
+if [ "$FL" = arch ]; then IMGNAME=rootfs-arch-dodge.img; else IMGNAME=rootfs-ubuntu-noble-dodge.img; fi
+IMG=/root/out/$IMGNAME; printf "%s\n" "$IMGNAME" > /root/out/rootfs-image.name
+rm -f /root/out/rootfs-ubuntu-noble-dodge.img /root/out/rootfs-arch-dodge.img
+read -r OUSER OHASH OHOST < /root/out/linux-user; [ -n "$OHOST" ] || { echo "!! no device name in /root/out/linux-user"; exit 1; }; printf "%s\n" "$OUSER" > /root/out/linux-user.name
 for m in proc sys dev dev/pts; do umount -l $R/$m 2>/dev/null || true; done
 rm -rf $R; mkdir -p $R
-tar -xzf /root/dl/ubuntu-base-24.04.5-base-arm64.tar.gz -C $R
+if [ "$FL" = arch ]; then
+  # Arch Linux ARM publishes one moving "latest" tarball, so there is no checksum to commit: it is trusted by its
+  # detached signature, which must be valid and made by the Arch Linux ARM build key pinned here. Plain http on
+  # purpose: the host serves a certificate for another name, and transport is not what is trusted.
+  export DEBIAN_FRONTEND=noninteractive; apt-get install -y -qq --no-install-recommends curl ca-certificates gnupg libarchive-tools >/dev/null
+  A=ArchLinuxARM-aarch64-latest.tar.gz; AU=http://os.archlinuxarm.org/os/$A; AK=68B3537F39A313B3E574D06777193F152BDBE6A6
+  cd /root/dl
+  if [ ! -s $A ] || [ ! -s $A.sig ]; then
+    echo "downloading $AU"; curl -fL --retry 3 -sS -o $A.part $AU; curl -fsSL -o $A.md5 $AU.md5; curl -fsSL -o $A.sig $AU.sig; mv $A.part $A
+  fi
+  md5sum -c --quiet $A.md5 || { echo "!!  MD5 mismatch for $A (delete /root/dl/$A to download again)"; exit 1; }
+  export GNUPGHOME=/root/dl/alarm-gnupg; mkdir -p -m 700 $GNUPGHOME
+  [ -s /root/dl/alarm-builder.asc ] || curl -fsSL -o /root/dl/alarm-builder.asc "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x$AK"
+  gpg -q --batch --import /root/dl/alarm-builder.asc 2>/dev/null
+  gpg --batch --status-fd 1 --verify $A.sig $A 2>/dev/null | grep -q "^\[GNUPG:\] VALIDSIG .*$AK" || { echo "!!  $A is not signed by the Arch Linux ARM build key $AK"; exit 1; }
+  echo "$A: MD5 ok, signature by $AK ok, sha256 $(sha256sum $A | cut -c1-64)"
+  unset GNUPGHOME; cd /root
+  bsdtar -xpf /root/dl/$A -C $R
+else
+  tar -xzf /root/dl/ubuntu-base-24.04.5-base-arm64.tar.gz -C $R
+fi
 rm -f $R/etc/resolv.conf; printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > $R/etc/resolv.conf
-printf "oneplus13\n" > $R/etc/hostname; printf "127.0.0.1 localhost oneplus13\n::1 localhost\n" > $R/etc/hosts
+printf "%s\n" "$OHOST" > $R/etc/hostname; printf "127.0.0.1 localhost %s\n::1 localhost\n" "$OHOST" > $R/etc/hosts
 mount -t proc proc $R/proc; mount --bind /dev $R/dev; mount --bind /dev/pts $R/dev/pts; mount -t sysfs sys $R/sys
 install -m 600 /root/out/linux-user $R/root/.linux-user
+if [ "$FL" = arch ]; then
+install -m 755 /root/dl/arch-rootfs.sh $R/root/arch-rootfs.sh
+chroot $R /usr/bin/env -i HOME=/root TERM=dumb LANG=C.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin /bin/bash /root/arch-rootfs.sh /root/.linux-user $DESK
+rm -f $R/root/arch-rootfs.sh
+else
 cp /root/out/linux-flavor $R/root/.linux-flavor 2>/dev/null || echo server > $R/root/.linux-flavor
 cat > $R/usr/sbin/policy-rc.d <<P
 #!/bin/sh
@@ -270,16 +378,22 @@ fi
 rm -f /root/.linux-flavor
 locale-gen C.UTF-8 >/dev/null 2>&1 || true
 ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
-read -r u h < /root/.linux-user; rm -f /root/.linux-user
+read -r u h _ < /root/.linux-user; rm -f /root/.linux-user
 useradd -m -s /bin/bash -G sudo,adm,dialout,plugdev,netdev -p \"\$h\" \"\$u\"
 printf \"%s ALL=(ALL) NOPASSWD:ALL\n\" \"\$u\" > /etc/sudoers.d/\$u; chmod 440 /etc/sudoers.d/\$u
 passwd -l root
 systemctl enable ssh NetworkManager systemd-resolved systemd-timesyncd serial-getty@ttyGS0.service getty@tty1.service >/dev/null 2>&1 || true
 systemctl disable systemd-networkd-wait-online.service >/dev/null 2>&1 || true
 apt-get clean"
+if [ "$DESK" = gnome ]; then
+  install -m 755 /root/dl/ubuntu-gnome-rootfs.sh $R/root/ubuntu-gnome-rootfs.sh
+  chroot $R /usr/bin/env -i HOME=/root TERM=dumb PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash /root/ubuntu-gnome-rootfs.sh
+  rm -f $R/root/ubuntu-gnome-rootfs.sh
+fi
 rm -f $R/usr/sbin/policy-rc.d
-# this build'"'"'s kernel modules
-mkdir -p $R/lib/modules; cp -a $MODS/* $R/lib/modules/
+fi
+# this build'"'"'s kernel modules (on Arch /lib is a link to usr/lib; the trailing slashes follow it)
+mkdir -p $R/lib/modules/ $R/lib/firmware/; cp -a $MODS/* $R/lib/modules/
 # the phone'"'"'s own vendor firmware (staged from the running Android): raw copies plus the names mainline asks for
 if [ -d /root/dl/vendor-fw/lib/firmware ]; then
   cp -a /root/dl/vendor-fw/lib/firmware/. $R/lib/firmware/
@@ -299,7 +413,11 @@ fi
 # SSH keys for root and the user (project key); root login by key only
 for h in $R/root $R/home/$OUSER; do mkdir -p $h/.ssh; cp /root/dl/authorized_keys $h/.ssh/authorized_keys; chmod 700 $h/.ssh; chmod 600 $h/.ssh/authorized_keys; done
 chroot $R chown -R $OUSER:$OUSER /home/$OUSER/.ssh
-printf "PermitRootLogin prohibit-password\nPasswordAuthentication yes\n" > $R/etc/ssh/sshd_config.d/omamobile.conf
+# with a desktop the password is typed on the on-screen keyboard and tends to be short, so SSH takes the key only;
+# the same for arch, as before
+mkdir -p $R/etc/ssh/sshd_config.d
+if [ "$FL" = arch ] || [ "$DESK" = gnome ]; then PWAUTH=no; else PWAUTH=yes; fi
+printf "PermitRootLogin prohibit-password\nPasswordAuthentication %s\n" $PWAUTH > $R/etc/ssh/sshd_config.d/omamobile.conf
 # USB gadget network (the initramfs creates the gadget; the kernel keeps it across switch_root)
 mkdir -p $R/etc/NetworkManager/system-connections
 cat > $R/etc/NetworkManager/system-connections/usb0.nmconnection <<N
@@ -330,5 +448,5 @@ e2fsck -fn $IMG >/dev/null && echo fsck-ok
 ls -la $IMG; echo ROOTFS-DONE' ;;
 status)
     su_sh "for f in $R/root/build-*.log; do echo \"== \$f\"; tail -4 \"\$f\"; done" ;;
-*) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+*) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

@@ -159,8 +159,9 @@ poll with `status` until the log ends in `STAGE2-BUILD-DONE`, then continue:
 ```bash
 scripts/omarchy-build-phone.sh stage2
 scripts/omarchy-build-phone.sh status            # repeat until STAGE2-BUILD-DONE
-scripts/omarchy-build-phone.sh initramfs        # seconds; log ends in INITRAMFS-DONE
-scripts/omarchy-build-phone.sh chain            # about 10 min; log ends in CHAIN-DONE
+scripts/omarchy-build-phone.sh initramfs        # runs detached, takes seconds
+scripts/omarchy-build-phone.sh status            # wait for INITRAMFS-DONE before the next line: chain needs the finished initramfs
+scripts/omarchy-build-phone.sh chain            # about 10 min; log ends in CHAIN-DONE (printed only when the image was packed)
 scripts/omarchy-build-phone.sh pull             # copies to firmware/images/omarchy-dodge-<ts>/ and omarchy-dodge-stage2-<ts>/
 ```
 
@@ -202,40 +203,70 @@ PID 1 is a shell script. The SSH session hangs when the phone goes away: close i
 
 ---
 
-## Phase 3d — build the Ubuntu root filesystem
+## Phase 3d — build the root filesystem (Ubuntu or Arch Linux)
 
-The `rootfs` step asks which Ubuntu to build (`OMARCHY_FLAVOR=server|minimal` skips the question):
+The `rootfs` step asks two things about the system: which one to build, and then whether you want a GUI
+(a yes/no question). `OMARCHY_FLAVOR=server|minimal|arch` and `OMARCHY_DESKTOP=none|gnome` skip the questions.
 
-| Choice | What you get |
+| System | What you get |
 |---|---|
 | `server` (default) | **Ubuntu Server 24.04**: Ubuntu Base plus the `ubuntu-minimal`, `ubuntu-standard` and `ubuntu-server` package sets, the same seeds a server image is built from |
-| `minimal` | Only what the phone needs to boot, join a network and be reached over SSH; about 350 MB smaller |
+| `minimal` | Bare Ubuntu 24.04: only what the phone needs to boot, join a network and be reached over SSH; about 350 MB smaller |
+| `arch` | **Arch Linux ARM** (rolling release): base system, network, SSH and the usual command-line tools |
+
+| GUI | What you get |
+|---|---|
+| no (`none`) | Text console on the phone screen (login prompt), serial console and SSH |
+| yes (`gnome`) | **GNOME** with the GDM login screen, on-screen keyboard, terminal, browser, file manager and settings. Adds about 1.5 GB on Ubuntu and about 3 GB on Arch |
 
 Two things a stock server install has are left out of `server` on purpose: `snapd` and `cloud-init` (cloud-init would
 rewrite the network and SSH setup at first boot). `multipathd` is masked so it leaves the phone's UFS LUNs alone, and
-NetworkManager stays in charge of Wi-Fi and USB networking. `verify-rootfs` prints the chosen flavor and an
-`ubuntu-server:` line, which must say `install ok installed` for `server`.
+NetworkManager stays in charge of Wi-Fi and USB networking.
 
-**(you type)** asks for the Linux user name, the device name (hostname, Enter keeps `oneplus13`) and the password
-(twice, no echo; `OMARCHY_USER`, `OMARCHY_HOSTNAME`, `OMARCHY_PASSWORD` skip the prompts). Run it from Terminal.app, not from inside
-another tool: without a terminal it stops with a message. It runs detached for about 20 min; `status` shows the log.
+About `arch` (added 2026-11-24):
+
+- It starts from Arch Linux ARM's official root tarball, downloaded on the phone during this step (830 MB) and accepted
+  only with a valid signature from the Arch Linux ARM build key. `scripts/arch-rootfs.sh` then removes the generic
+  kernel and its firmware, upgrades, and sets up the system. Kernel, boot image and install steps are the same as
+  for Ubuntu.
+- The default `alarm` account of Arch Linux ARM is removed and root is locked. SSH accepts only the project key.
+
+About the `gnome` desktop (on Ubuntu it is added by `scripts/ubuntu-gnome-rootfs.sh`, on Arch by `scripts/arch-rootfs.sh`):
+
+- The password also unlocks the screen, typed on the on-screen keyboard, so a short one or a PIN is practical. For
+  that reason SSH accepts only the project key when a desktop is chosen (no password login).
+- Graphics are drawn by the CPU (software rendering), so animations are slow. The Adreno 830 does not start on this
+  kernel: its `gen80000_zap.mbn` firmware is missing. To try the GPU once that is solved, delete
+  `/etc/environment.d/50-oneplus13-software-gl.conf` and the two matching lines in `/etc/environment` on the phone,
+  then reboot. SSH over USB keeps working if the screen does not come up.
+- What has run on the phone: GNOME on Arch (2026-11-24, installed on the running system after a first build with
+  the Phosh phone shell) and GNOME on Ubuntu with the same package set (2026-11-23, also installed on the running
+  system). An image built with the desktop from scratch by this step has **not been booted yet**; the build itself
+  was run in containers.
+- The lock-screen and login keyboard is GNOME's own. If the screen stays on the text console, log in over SSH and
+  look at `journalctl -b -u gdm`.
+
+**(you type)** asks, in this order, for the system, GUI yes or no, the device name (hostname; no default, you must
+enter one), the Linux user name and the password (twice, no echo) (`OMARCHY_FLAVOR`, `OMARCHY_HOSTNAME`,
+`OMARCHY_USER`, `OMARCHY_PASSWORD`, `OMARCHY_DESKTOP` skip the prompts). Run it from Terminal.app, not from inside another tool: without a
+terminal it stops with a message. It runs detached, about 20 min for Ubuntu and 30 to 40 min for Arch, longer with the desktop; `status` shows the log.
 
 ```bash
 scripts/omarchy-build-phone.sh rootfs
 scripts/omarchy-build-phone.sh status            # until ROOTFS-DONE
-scripts/omarchy-build-phone.sh verify-rootfs     # systemd/sshd/NetworkManager ok, your user, 1789 modules, ath12k firmware set
-scripts/omarchy-build-phone.sh mkimage           # minimal ext4 image (~2 GB). fastboot on macOS cannot read raw images >= 4 GiB
+scripts/omarchy-build-phone.sh verify-rootfs     # flavor, services, your user, kernel modules, ath12k firmware set
+scripts/omarchy-build-phone.sh mkimage           # minimal ext4 image (about 2 GB for Ubuntu, 5 GB for Arch with GNOME)
+scripts/omarchy-build-phone.sh pull-rootfs       # copy to the Mac, compare sha256 with the phone's, write the .sparse.img
 ```
 
-Bring the image to the Mac (zstd on both sides keeps the transfer small) and check it:
+`verify-rootfs` must show no `MISSING` line; for `server` the `ubuntu-server:` line must say `install ok installed`, with
+the `gnome` desktop the `desktop:` line must say `login screen enabled`.
 
-```bash
-A=tools/platform-tools/adb; D=firmware/images/omarchy-dodge-rootfs-$(date +%Y%m%d-%H%M); mkdir -p $D
-$A shell "su -c '/data/local/ubuntu/start.sh /bin/bash -c \"cd /root/out && zstd -T8 -3 -q -f rootfs-ubuntu-noble-dodge.img && sha256sum rootfs-ubuntu-noble-dodge.img > rootfs-ubuntu-noble-dodge.img.sha256\"'"
-$A shell "su -c 'cp /data/local/ubuntu/root/out/rootfs-ubuntu-noble-dodge.img.zst /data/local/tmp/rootfs.img.zst && chmod 644 /data/local/tmp/rootfs.img.zst && cat /data/local/ubuntu/root/out/rootfs-ubuntu-noble-dodge.img.sha256'" > $D/rootfs-ubuntu-noble-dodge.img.sha256
-$A pull /data/local/tmp/rootfs.img.zst $D/rootfs-ubuntu-noble-dodge.img.zst
-(cd $D && zstd -d -q rootfs-ubuntu-noble-dodge.img.zst && rm rootfs-ubuntu-noble-dodge.img.zst && shasum -a 256 rootfs-ubuntu-noble-dodge.img | cut -c1-64 && cut -c1-64 rootfs-ubuntu-noble-dodge.img.sha256)   # the two hashes must match
-```
+`pull-rootfs` leaves two files in `firmware/images/omarchy-dodge-rootfs-<date>/`: the raw image and a `.sparse.img`.
+The sparse file is the one to flash. On 2026-11-24 `fastboot flash userdata` failed on the 2.3 GB raw `server` image
+before sending anything (the 1.9 GB `minimal` images of earlier runs went through raw); `scripts/img2simg.py` writes the
+sparse file and accepts it only when it expands to exactly the raw image. The Arch sparse file is about 3.4 GB, larger
+than any flashed so far: if fastboot refuses it, the error is printed and nothing is written.
 
 ---
 
@@ -248,12 +279,19 @@ backup, the stock set, the key, and that fastboot sees the phone; every write st
 
 ```bash
 scripts/omarchy-install-slot-b.sh preflight
-scripts/omarchy-install-slot-b.sh userdata firmware/images/omarchy-dodge-rootfs-*/rootfs-ubuntu-noble-dodge.img
+scripts/omarchy-install-slot-b.sh userdata firmware/images/omarchy-dodge-rootfs-*/rootfs-*.sparse.img
 scripts/omarchy-install-slot-b.sh boot_b   firmware/images/omarchy-dodge-chain-dbg-*/boot-chain-install-dbg-avb.img
 scripts/omarchy-install-slot-b.sh activate
 ```
 
-Ubuntu appears on the phone screen within about a minute (login: your user name and password). From the Mac:
+The `userdata` step must print `Sending sparse 'userdata'` / `Writing 'userdata' OKAY` lines and end with
+"userdata written". If it does not, stop: with boot_b and `activate` done but no root filesystem, the phone only
+reaches the rescue initramfs (root over SSH, `cannot mount /dev/sda15` in dmesg). Recover by holding Volume Down
+while it restarts to get fastboot, flash userdata, then `tools/platform-tools/fastboot reboot`.
+
+The text login appears on the phone screen within about a minute (your user name and password). With the `gnome`
+desktop the GNOME login screen appears instead: tap your name and enter the password. From the Mac (the serial console and SSH work
+the same for every flavor):
 
 ```bash
 screen /dev/cu.usbmodemomamobile3 115200          # serial login; Ctrl-A K to leave
@@ -274,7 +312,8 @@ ssh -6 -i keys/omarchy-dodge_ed25519 YOUR_USER@fe80::REPLACE_ME%en13
    sudo sgdisk -i 48 /dev/sde | grep Attribute                        # bit 54 set: the first byte becomes 0x7x, e.g. 007F...
    ```
 
-2. **Wi-Fi** (NetworkManager, saved with autoconnect; `sudo` is required because the minimal image has no polkit):
+2. **Wi-Fi** (NetworkManager, saved with autoconnect; `sudo` is required because the minimal image has no polkit).
+   Under GNOME the Wi-Fi page of Settings does the same from the screen:
 
    ```bash
    sudo nmcli dev wifi list
@@ -293,7 +332,8 @@ ssh -6 -i keys/omarchy-dodge_ed25519 YOUR_USER@fe80::REPLACE_ME%en13
    sudo systemctl restart systemd-logind
    ```
 
-4. **Device name.** Images built after 2026-11-23 ask for it during the `rootfs` step. To change it on an installed
+4. **Device name.** The `rootfs` step asks for it (since 2026-11-24; images built before that are named
+   `oneplus13`). The phone answers to `<name>.local` on USB and Wi-Fi. To change it on an installed
    system (takes effect at once; log in again to see it in the prompt):
 
    ```bash
